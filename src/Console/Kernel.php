@@ -418,13 +418,7 @@ final class Kernel
     {
         Database::connect();
 
-        $total = ['processed' => 0, 'failed' => 0];
-
-        foreach (['default', 'webhooks'] as $queue) {
-            $result = JobService::work($queue, $max);
-            $total['processed'] += $result['processed'];
-            $total['failed'] += $result['failed'];
-        }
+        $total = JobService::workAll($max);
 
         if ($total['processed'] === 0 && $total['failed'] === 0) {
             $this->info('Queue is empty.');

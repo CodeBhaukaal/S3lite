@@ -471,7 +471,12 @@ final class AdminController extends Controller
 
     public function workQueue(Request $request): Response
     {
-        $result = JobService::work($request->string('queue', 'default'), 25);
+        // No queue named: drain them all, so webhook deliveries are not missed.
+        $queue = $request->string('queue');
+
+        $result = $queue === ''
+            ? JobService::workAll(25)
+            : JobService::work($queue, 25);
 
         return $this->back($request, 'success', "Processed {$result['processed']} job(s), {$result['failed']} failed.");
     }

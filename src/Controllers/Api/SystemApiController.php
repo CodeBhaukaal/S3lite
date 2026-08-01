@@ -171,7 +171,11 @@ final class SystemApiController extends Controller
     {
         $this->requireAdmin();
 
-        return $this->json(JobService::work($request->string('queue', 'default'), $request->int('max', 25)));
+        // No queue named: drain them all, so webhook deliveries are not missed.
+        $queue = $request->string('queue');
+        $max = $request->int('max', 25);
+
+        return $this->json($queue === '' ? JobService::workAll($max) : JobService::work($queue, $max));
     }
 
     // --- Backups --------------------------------------------------------

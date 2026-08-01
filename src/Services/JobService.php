@@ -67,8 +67,31 @@ final class JobService
         }
     }
 
+    /** Every queue the platform dispatches to. */
+    public const QUEUES = ['default', 'webhooks'];
+
     /**
-     * Drain the queue.
+     * Drain every queue. This is what callers want unless they are running a
+     * dedicated worker per queue — draining only `default` would silently leave
+     * webhook deliveries stuck forever.
+     *
+     * @return array{processed:int, failed:int}
+     */
+    public static function workAll(int $maxJobsPerQueue = 100): array
+    {
+        $total = ['processed' => 0, 'failed' => 0];
+
+        foreach (self::QUEUES as $queue) {
+            $result = self::work($queue, $maxJobsPerQueue);
+            $total['processed'] += $result['processed'];
+            $total['failed'] += $result['failed'];
+        }
+
+        return $total;
+    }
+
+    /**
+     * Drain a single queue.
      *
      * @return array{processed:int, failed:int}
      */
