@@ -23,6 +23,7 @@ $router->group(['prefix' => '/install'], static function ($router): void {
     $router->get('/', InstallController::class . '@show')->name('install');
     $router->post('/test-database', InstallController::class . '@testDatabase')->middleware('throttle:20,60');
     $router->post('/test-redis', InstallController::class . '@testRedis')->middleware('throttle:20,60');
+    $router->post('/test-mail', InstallController::class . '@testMail')->middleware('throttle:20,60');
     $router->post('/run', InstallController::class . '@install')->middleware('throttle:5,300');
 });
 
@@ -144,6 +145,7 @@ $router->group(['prefix' => '/admin', 'middleware' => ['installed', 'auth', 'adm
 
     $router->get('/settings', AdminController::class . '@settings');
     $router->post('/settings', AdminController::class . '@updateSettings')->middleware('csrf');
+    $router->post('/settings/test-mail', AdminController::class . '@testMail')->middleware('csrf', 'throttle:10,60');
 
     $router->get('/monitoring', AdminController::class . '@monitoring');
     $router->get('/monitoring/data', AdminController::class . '@metricsJson');

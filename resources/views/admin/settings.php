@@ -19,6 +19,7 @@ $groups = [
     'uploads'  => ['Uploads', 'upload'],
     'security' => ['Security', 'shield'],
     'services' => ['Transfer services', 'server'],
+    'email'    => ['Email', 'send'],
 ];
 
 View::startSection('content');
@@ -224,6 +225,59 @@ View::startSection('content');
             <div class="card__foot"><button class="btn btn-primary" type="submit"><?= icon('save') ?> Save security settings</button></div>
         </div>
     </form>
+</div>
+
+<!-- Email -->
+<div data-tab-panel="email" data-tab-group="settings" class="hidden">
+    <div class="card">
+        <div class="card__head">
+            <?= icon('send') ?><h2>Email</h2>
+            <?php if ($mail['configured']): ?>
+                <span class="badge badge-success"><span class="dot dot-success"></span> <?= e($mail['driver']) ?></span>
+            <?php else: ?>
+                <span class="badge">not configured</span>
+            <?php endif; ?>
+        </div>
+        <div class="card__body">
+            <div class="alert alert-info">
+                <?= icon('info') ?>
+                <div class="alert__body">
+                    These come from your <span class="code-inline">.env</span> file, so they survive a
+                    settings reset and never sit in the database. Edit them there, or re-run the
+                    installer. Use the button below to check they work.
+                </div>
+            </div>
+
+            <dl class="kv">
+                <dt>Driver</dt><dd><span class="badge"><?= e($mail['driver']) ?></span></dd>
+                <?php if ($mail['driver'] === 'smtp'): ?>
+                    <dt>Host</dt><dd class="mono small"><?= e($mail['host'] ?: 'not set') ?></dd>
+                    <dt>Port</dt><dd class="mono small"><?= e((string) $mail['port']) ?></dd>
+                    <dt>Encryption</dt><dd><span class="badge"><?= e($mail['encryption']) ?></span></dd>
+                    <dt>Username</dt><dd class="mono small"><?= e($mail['username'] ?: 'none') ?></dd>
+                    <dt>Password</dt><dd><?= $mail['has_password'] ? '<span class="badge badge-success">set</span>' : '<span class="badge">not set</span>' ?></dd>
+                <?php endif; ?>
+                <dt>From</dt><dd class="mono small"><?= e($mail['from_name']) ?> &lt;<?= e($mail['from']) ?>&gt;</dd>
+            </dl>
+
+            <hr>
+
+            <form method="post" action="<?= e(url('/admin/settings/test-mail')) ?>">
+                <?= csrf_field() ?>
+                <div class="field" style="max-width:360px">
+                    <label class="label" for="test_to">Send a test message to</label>
+                    <input class="input" id="test_to" name="test_to" type="email" required
+                           placeholder="you@example.com" value="<?= e((string) ($authUser['email'] ?? '')) ?>">
+                </div>
+                <button class="btn btn-primary" type="submit" <?= $mail['configured'] ? '' : 'disabled' ?>>
+                    <?= icon('send') ?> Send test email
+                </button>
+                <?php if (!$mail['configured']): ?>
+                    <div class="hint">Set <span class="code-inline">MAIL_DRIVER</span> in .env first.</div>
+                <?php endif; ?>
+            </form>
+        </div>
+    </div>
 </div>
 
 <!-- Services -->

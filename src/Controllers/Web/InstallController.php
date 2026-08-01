@@ -29,6 +29,15 @@ final class InstallController extends Controller
                 'redis_host' => '127.0.0.1',
                 'redis_port' => 6379,
                 'timezone'   => date_default_timezone_get(),
+
+                // Shown pre-filled in the wizard and written as-is if untouched.
+                'mail_port'            => 587,
+                'mail_encryption'      => 'tls',
+                'max_upload_size'      => 5368709120,
+                'chunk_size'           => 8388608,
+                'default_quota'        => 10737418240,
+                'trash_retention_days' => 30,
+                'versions_kept'        => 10,
             ],
             'timezones' => Installer::timezones(),
         ]);
@@ -62,6 +71,49 @@ final class InstallController extends Controller
         ]));
     }
 
+    public function testMail(Request $request): Response
+    {
+        if (Installer::isInstalled()) {
+            return $this->error('already_installed', 'The platform is already installed.', 409);
+        }
+
+        $mailer = new \App\Services\Mailer([
+            'driver'     => 'smtp',
+            'host'       => $request->string('mail_host'),
+            'port'       => $request->int('mail_port', 587),
+            'encryption' => $request->string('mail_encryption', 'tls'),
+            'username'   => (string) $request->input('mail_username', ''),
+            'password'   => (string) $request->input('mail_password', ''),
+            'timeout'    => 15,
+            'from'       => [
+                'address' => $request->string('mail_from') ?: 'no-reply@localhost',
+                'name'    => $request->string('mail_from_name') ?: 'S3 Lite',
+            ],
+            'allow_self_signed' => $request->bool('mail_allow_self_signed'),
+        ]);
+
+        $recipient = $request->string('mail_test_to');
+
+        // With a recipient, prove delivery end to end; without one, just prove
+        // the credentials work.
+        $result = $recipient === ''
+            ? $mailer->testConnection()
+            : $mailer->send(
+                $recipient,
+                'Test message from your new S3lite install',
+                \App\Services\Mailer::template(
+                    'Email is working',
+                    '<p>If you are reading this, the SMTP settings you entered in the installer are correct.</p>'
+                )
+            );
+
+        return $this->json([
+            'ok'         => $result['ok'],
+            'message'    => $result['message'],
+            'transcript' => array_slice($result['transcript'] ?? [], -12),
+        ]);
+    }
+
     public function install(Request $request): Response
     {
         if (Installer::isInstalled()) {
@@ -86,10 +138,28 @@ final class InstallController extends Controller
                 'db_pass'        => (string) $request->input('db_pass', ''),
                 'app_env'        => $request->string('app_env', 'production'),
                 'app_debug'      => $request->bool('app_debug', false),
+                'force_https'    => $request->bool('force_https', false),
+
                 'redis_enabled'  => $request->bool('redis_enabled', false),
                 'redis_host'     => $request->string('redis_host', '127.0.0.1'),
                 'redis_port'     => $request->int('redis_port', 6379),
                 'redis_password' => (string) $request->input('redis_password', ''),
+
+                'mail_driver'     => $request->string('mail_driver', 'none'),
+                'mail_host'       => $request->string('mail_host'),
+                'mail_port'       => $request->int('mail_port', 587),
+                'mail_encryption' => $request->string('mail_encryption', 'tls'),
+                'mail_username'   => (string) $request->input('mail_username', ''),
+                'mail_password'   => (string) $request->input('mail_password', ''),
+                'mail_from'       => $request->string('mail_from') ?: 'no-reply@localhost',
+                'mail_from_name'  => $request->string('mail_from_name') ?: $request->string('app_name', 'S3 Lite'),
+
+                // Left blank in the wizard? The documented default is written.
+                'max_upload_size' => $request->int('max_upload_size', 5368709120),
+                'chunk_size'      => $request->int('chunk_size', 8388608),
+                'default_quota'   => $request->int('default_quota', 10737418240),
+                'trash_retention_days' => $request->int('trash_retention_days', 30),
+                'versions_kept'   => $request->int('versions_kept', 10),
             ]));
         } catch (\Throwable $e) {
             \App\Core\Logger::exception($e, ['stage' => 'install']);

@@ -309,6 +309,17 @@ final class AdminController extends Controller
         return $this->view('admin.settings', [
             'settings' => SettingService::grouped(),
             'defaults' => SettingService::defaults(),
+            'mail'     => [
+                'configured'   => \App\Services\Mailer::isConfigured(),
+                'driver'       => (string) config('mail.driver', 'none'),
+                'host'         => (string) config('mail.host', ''),
+                'port'         => (int) config('mail.port', 587),
+                'encryption'   => (string) config('mail.encryption', 'tls'),
+                'username'     => (string) config('mail.username', ''),
+                'has_password' => (string) config('mail.password', '') !== '',
+                'from'         => (string) config('mail.from.address', ''),
+                'from_name'    => (string) config('mail.from.name', ''),
+            ],
         ]);
     }
 
@@ -361,6 +372,25 @@ final class AdminController extends Controller
         AuditService::log('settings.update', 'settings', $group, 'Updated ' . $group . ' settings', array_keys($values));
 
         return $this->back($request, 'success', 'Settings saved.');
+    }
+
+    public function testMail(Request $request): Response
+    {
+        $this->validate($request, ['test_to' => 'required|email']);
+
+        $to = $request->string('test_to');
+        $result = (new \App\Services\Mailer())->send(
+            $to,
+            'Test message from ' . SettingService::get('site_name', config('app.name')),
+            \App\Services\Mailer::template(
+                'Email is working',
+                '<p>Your mail settings are correct — this message was sent from your own server.</p>'
+            )
+        );
+
+        AuditService::log('mail.test', 'settings', null, 'Sent a test email to ' . $to, [], $result['ok'] ? 'success' : 'failed');
+
+        return $this->back($request, $result['ok'] ? 'success' : 'error', $result['message']);
     }
 
     // --- Monitoring -----------------------------------------------------

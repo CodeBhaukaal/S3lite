@@ -105,7 +105,11 @@ final class Env
             self::$vars[$key] = (string) $value;
         }
 
-        file_put_contents($path, implode(PHP_EOL, $lines) . PHP_EOL);
+        if (file_put_contents($path, implode(PHP_EOL, $lines) . PHP_EOL) === false) {
+            throw new \RuntimeException(
+                'Could not write ' . $path . '. Make the file (or its directory) writable and try again.'
+            );
+        }
     }
 
     private static function quote(string $value): string

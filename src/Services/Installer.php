@@ -120,7 +120,12 @@ final class Installer
             'username' => $config['username'],
             'password' => $config['password'],
             'charset'  => 'utf8mb4',
-            'options'  => [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION],
+            'options'  => [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                // Without this a wrong host leaves the wizard apparently frozen
+                // for however long the OS takes to give up on the connection.
+                PDO::ATTR_TIMEOUT => 5,
+            ],
         ];
 
         // Step 1: can we reach the server at all?
@@ -313,24 +318,51 @@ final class Installer
             copy($base . '/.env.example', $envPath);
         }
 
+        // Anything the operator left alone is written with its documented
+        // default, so the finished .env is complete and self-explanatory rather
+        // than a handful of keys with the rest implied.
+        $appName = (string) ($input['app_name'] ?? 'S3 Lite');
+        $mailDriver = (string) ($input['mail_driver'] ?? 'none');
+
         Env::write($envPath, [
-            'APP_NAME'      => (string) ($input['app_name'] ?? 'S3 Lite'),
-            'APP_ENV'       => (string) ($input['app_env'] ?? 'production'),
-            'APP_DEBUG'     => ($input['app_debug'] ?? false) ? 'true' : 'false',
-            'APP_KEY'       => $appKey,
-            'APP_URL'       => rtrim((string) ($input['app_url'] ?? ''), '/'),
-            'APP_TIMEZONE'  => (string) ($input['timezone'] ?? 'UTC'),
-            'DB_HOST'       => $dbConfig['host'],
-            'DB_PORT'       => (string) $dbConfig['port'],
-            'DB_DATABASE'   => $dbConfig['database'],
-            'DB_USERNAME'   => $dbConfig['username'],
-            'DB_PASSWORD'   => $dbConfig['password'],
-            'JWT_SECRET'    => $jwtSecret,
-            'CRON_TOKEN'    => $cronToken,
-            'REDIS_ENABLED' => ($input['redis_enabled'] ?? false) ? 'true' : 'false',
-            'REDIS_HOST'    => (string) ($input['redis_host'] ?? '127.0.0.1'),
-            'REDIS_PORT'    => (string) ($input['redis_port'] ?? 6379),
+            'APP_NAME'       => $appName,
+            'APP_ENV'        => (string) ($input['app_env'] ?? 'production'),
+            'APP_DEBUG'      => ($input['app_debug'] ?? false) ? 'true' : 'false',
+            'APP_KEY'        => $appKey,
+            'APP_URL'        => rtrim((string) ($input['app_url'] ?? ''), '/'),
+            'APP_TIMEZONE'   => (string) ($input['timezone'] ?? 'UTC'),
+            'FORCE_HTTPS'    => ($input['force_https'] ?? false) ? 'true' : 'false',
+
+            'DB_HOST'        => $dbConfig['host'],
+            'DB_PORT'        => (string) $dbConfig['port'],
+            'DB_DATABASE'    => $dbConfig['database'],
+            'DB_USERNAME'    => $dbConfig['username'],
+            'DB_PASSWORD'    => $dbConfig['password'],
+
+            'JWT_SECRET'     => $jwtSecret,
+            'CRON_TOKEN'     => $cronToken,
+
+            'REDIS_ENABLED'  => ($input['redis_enabled'] ?? false) ? 'true' : 'false',
+            'REDIS_HOST'     => (string) ($input['redis_host'] ?? '127.0.0.1'),
+            'REDIS_PORT'     => (string) ($input['redis_port'] ?? 6379),
             'REDIS_PASSWORD' => (string) ($input['redis_password'] ?? ''),
+
+            'MAIL_DRIVER'     => $mailDriver,
+            'MAIL_HOST'       => (string) ($input['mail_host'] ?? ''),
+            'MAIL_PORT'       => (string) ($input['mail_port'] ?? 587),
+            'MAIL_ENCRYPTION' => (string) ($input['mail_encryption'] ?? 'tls'),
+            'MAIL_USERNAME'   => (string) ($input['mail_username'] ?? ''),
+            'MAIL_PASSWORD'   => (string) ($input['mail_password'] ?? ''),
+            'MAIL_FROM'       => (string) ($input['mail_from'] ?? 'no-reply@localhost'),
+            'MAIL_FROM_NAME'  => (string) ($input['mail_from_name'] ?? $appName),
+
+            'STORAGE_DRIVER'  => 'local',
+            'MAX_UPLOAD_SIZE' => (string) ($input['max_upload_size'] ?? 5368709120),
+            'CHUNK_SIZE'      => (string) ($input['chunk_size'] ?? 8388608),
+            'DEFAULT_QUOTA'   => (string) ($input['default_quota'] ?? 10737418240),
+
+            'TRASH_RETENTION_DAYS' => (string) ($input['trash_retention_days'] ?? 30),
+            'VERSIONS_KEPT'        => (string) ($input['versions_kept'] ?? 10),
         ]);
 
         // Reload configuration with the new values.
@@ -347,9 +379,22 @@ final class Installer
         Config::set('cache.redis.enabled', (bool) ($input['redis_enabled'] ?? false));
         Config::set('cache.redis.host', (string) ($input['redis_host'] ?? '127.0.0.1'));
         Config::set('cache.redis.port', (int) ($input['redis_port'] ?? 6379));
+        Config::set('mail.driver', $mailDriver);
+        Config::set('mail.host', (string) ($input['mail_host'] ?? ''));
+        Config::set('mail.port', (int) ($input['mail_port'] ?? 587));
+        Config::set('mail.encryption', (string) ($input['mail_encryption'] ?? 'tls'));
+        Config::set('mail.username', (string) ($input['mail_username'] ?? ''));
+        Config::set('mail.password', (string) ($input['mail_password'] ?? ''));
+        Config::set('mail.from.address', (string) ($input['mail_from'] ?? 'no-reply@localhost'));
+        Config::set('mail.from.name', (string) ($input['mail_from_name'] ?? $appName));
 
         Database::reset();
         Database::connect();
+
+        // A cache left over from an earlier install would make the seeder think
+        // settings already exist and skip writing them into the new database.
+        \App\Core\Cache::flush();
+        SettingService::flush();
 
         // 3. Schema.
         $migrator = new Migrator($base . '/database/migrations');

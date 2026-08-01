@@ -307,6 +307,188 @@ final class UnitTest extends TestCase
         $this->assertFalse($result['can_create'] ?? true, 'An existing database must not be re-created');
     }
 
+    // --- Mailer -----------------------------------------------------------
+
+    public function testMailerSpeaksSmtp(): void
+    {
+        $port = random_int(21000, 21900);
+        $capture = sys_get_temp_dir() . '/s3lite-smtp-' . $port . '.json';
+        $server = $this->startFakeSmtp($port, $capture);
+
+        if ($server === null) {
+            $this->skip('Could not start the fake SMTP server');
+        }
+
+        try {
+            $mailer = new \App\Services\Mailer([
+                'driver'     => 'smtp',
+                'host'       => '127.0.0.1',
+                'port'       => $port,
+                'encryption' => 'none',
+                'username'   => 'user@example.com',
+                'password'   => 'secret123',
+                'timeout'    => 8,
+                'from'       => ['address' => 'noreply@example.com', 'name' => 'S3lite'],
+            ]);
+
+            $result = $mailer->send('dest@example.com', 'Subject with UTF-8: नमस्ते', '<p>Hello <b>world</b></p>');
+
+            $this->assertTrue($result['ok'], $result['message']);
+
+            // A password must never appear in the transcript shown to the operator.
+            $transcript = implode("\n", $result['transcript'] ?? []);
+            $this->assertNotContains('secret123', $transcript);
+            $this->assertNotContains(base64_encode('secret123'), $transcript);
+
+            $session = $this->readCapture($capture);
+
+            $this->assertSame('user@example.com', $session['auth_user'] ?? null, 'Credentials must reach the server');
+            $this->assertTrue($session['authenticated'] ?? false);
+            $this->assertContains('noreply@example.com', (string) ($session['mail_from'] ?? ''));
+            $this->assertContains('dest@example.com', (string) ($session['rcpt_to'] ?? ''));
+
+            $body = (string) ($session['data'] ?? '');
+            $this->assertContains('text/html', $body, 'The message must carry an HTML part');
+            $this->assertContains('text/plain', $body, 'The message must carry a plain-text part');
+            $this->assertContains('=?UTF-8?B?', $body, 'A non-ASCII subject must be encoded');
+        } finally {
+            @unlink($capture);
+        }
+    }
+
+    public function testMailerRejectsBadAuth(): void
+    {
+        $port = random_int(22000, 22900);
+        $capture = sys_get_temp_dir() . '/s3lite-smtp-' . $port . '.json';
+
+        if ($this->startFakeSmtp($port, $capture, true) === null) {
+            $this->skip('Could not start the fake SMTP server');
+        }
+
+        try {
+            $mailer = new \App\Services\Mailer([
+                'driver'   => 'smtp', 'host' => '127.0.0.1', 'port' => $port,
+                'encryption' => 'none', 'username' => 'u', 'password' => 'wrong', 'timeout' => 8,
+                'from'     => ['address' => 'a@b.c', 'name' => 'x'],
+            ]);
+
+            $result = $mailer->testConnection();
+
+            $this->assertFalse($result['ok']);
+            $this->assertContains('Authentication failed', $result['message']);
+            $this->assertContains('app password', $result['message'], 'The hint about app passwords is the usual cause');
+        } finally {
+            @unlink($capture);
+        }
+    }
+
+    public function testMailerReportsUnreachableServer(): void
+    {
+        $mailer = new \App\Services\Mailer([
+            'driver' => 'smtp', 'host' => '127.0.0.1', 'port' => 1, 'encryption' => 'none',
+            'timeout' => 3, 'from' => ['address' => 'a@b.c', 'name' => 'x'],
+        ]);
+
+        $result = $mailer->testConnection();
+
+        $this->assertFalse($result['ok']);
+        $this->assertContains('Could not reach', $result['message']);
+    }
+
+    public function testMailerValidatesRecipient(): void
+    {
+        $result = (new \App\Services\Mailer(['driver' => 'log']))->send('not-an-address', 'x', 'y');
+
+        $this->assertFalse($result['ok']);
+        $this->assertContains('valid recipient', $result['message']);
+    }
+
+    /**
+     * Start the bundled fake SMTP listener in its own process.
+     *
+     * proc_open with bypass_shell is the portable option here: a shell wrapper
+     * (start /B, or a trailing &) either loses the child or blocks on Windows.
+     */
+    private function startFakeSmtp(int $port, string $capture, bool $rejectAuth = false): ?string
+    {
+        $php = str_replace('\\', '/', PHP_BINARY);
+        $script = str_replace('\\', '/', dirname(__DIR__) . '/tests/fake-smtp.php');
+        $null = PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
+
+        $command = sprintf(
+            '"%s" "%s" %d "%s"%s',
+            $php,
+            $script,
+            $port,
+            str_replace('\\', '/', $capture),
+            $rejectAuth ? ' --reject-auth' : ''
+        );
+
+        $process = @proc_open(
+            $command,
+            [['pipe', 'r'], ['file', $null, 'w'], ['file', $null, 'w']],
+            $pipes,
+            null,
+            null,
+            ['bypass_shell' => true]
+        );
+
+        if (!is_resource($process)) {
+            return null;
+        }
+
+        self::$processes[] = $process;
+
+        // Wait on the marker the server writes, not on a TCP probe: the server
+        // accepts a single connection, and a probe would consume it.
+        for ($i = 0; $i < 40; $i++) {
+            usleep(100000);
+            $raw = @file_get_contents($capture);
+            $state = $raw === false ? null : json_decode($raw, true);
+
+            if (is_array($state) && ($state['listening'] ?? false) === true) {
+                return $capture;
+            }
+        }
+
+        return null;
+    }
+
+    /** @var list<resource> */
+    private static array $processes = [];
+
+    public function tearDown(): void
+    {
+        foreach (self::$processes as $process) {
+            if (is_resource($process)) {
+                $status = @proc_get_status($process);
+
+                if (($status['running'] ?? false) === true) {
+                    @proc_terminate($process);
+                }
+
+                @proc_close($process);
+            }
+        }
+
+        self::$processes = [];
+    }
+
+    private function readCapture(string $path): array
+    {
+        for ($i = 0; $i < 30; $i++) {
+            usleep(100000);
+            $raw = @file_get_contents($path);
+            $data = $raw === false ? null : json_decode($raw, true);
+
+            if (is_array($data) && isset($data['commands'])) {
+                return $data;
+            }
+        }
+
+        return [];
+    }
+
     // --- Cache / Redis ----------------------------------------------------
 
     public function testCacheRoundTrip(): void
