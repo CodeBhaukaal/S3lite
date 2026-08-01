@@ -102,26 +102,149 @@ final class Installer
     }
 
     /**
-     * @return array{ok:bool, message:string}
+     * Verify the credentials *and* the named database.
+     *
+     * Shared hosting users usually cannot create databases — the panel does that
+     * — so reporting "connected" from a server-level check alone would be a
+     * green light followed by a failed install.
+     *
+     * @return array{ok:bool, message:string, database_exists?:bool, can_create?:bool}
      */
     public static function testDatabase(array $config): array
     {
+        $name = trim((string) ($config['database'] ?? ''));
+
+        $base = [
+            'host'     => $config['host'],
+            'port'     => (int) $config['port'],
+            'username' => $config['username'],
+            'password' => $config['password'],
+            'charset'  => 'utf8mb4',
+            'options'  => [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION],
+        ];
+
+        // Step 1: can we reach the server at all?
         try {
-            $pdo = Database::connectServer([
-                'host'     => $config['host'],
-                'port'     => (int) $config['port'],
-                'username' => $config['username'],
-                'password' => $config['password'],
-                'charset'  => 'utf8mb4',
-                'options'  => [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION],
-            ]);
-
-            $version = $pdo->query('SELECT VERSION()')?->fetchColumn();
-
-            return ['ok' => true, 'message' => 'Connected to MySQL/MariaDB ' . (string) $version];
+            $pdo = Database::connectServer($base);
+            $version = (string) $pdo->query('SELECT VERSION()')?->fetchColumn();
         } catch (\Throwable $e) {
-            return ['ok' => false, 'message' => $e->getMessage()];
+            return ['ok' => false, 'message' => 'Could not connect: ' . self::friendlyDbError($e)];
         }
+
+        if ($name === '') {
+            return ['ok' => true, 'message' => 'Connected to MySQL/MariaDB ' . $version];
+        }
+
+        // Step 2: does the named database already exist and can we use it?
+        try {
+            Database::connect($base + ['database' => $name]);
+            Database::reset();
+
+            return [
+                'ok'              => true,
+                'message'         => sprintf('Connected to MySQL/MariaDB %s — database "%s" is ready.', $version, $name),
+                'database_exists' => true,
+                'can_create'      => false,
+            ];
+        } catch (\Throwable) {
+            Database::reset();
+        }
+
+        // Step 3: it is missing — may this account create it?
+        try {
+            $pdo->exec(sprintf(
+                'CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci',
+                str_replace('`', '', $name)
+            ));
+
+            return [
+                'ok'              => true,
+                'message'         => sprintf('Connected to MySQL/MariaDB %s — database "%s" created.', $version, $name),
+                'database_exists' => true,
+                'can_create'      => true,
+            ];
+        } catch (\Throwable $e) {
+            return [
+                'ok'      => false,
+                'message' => sprintf(
+                    'Connected to MySQL/MariaDB %s, but the database "%s" does not exist and this account may not create one (%s). '
+                    . 'Create the database in your hosting control panel first, then run the installer again.',
+                    $version,
+                    $name,
+                    self::friendlyDbError($e, true)
+                ),
+                'database_exists' => false,
+                'can_create'      => false,
+            ];
+        }
+    }
+
+    /**
+     * @throws \RuntimeException when the database can be neither reached nor created
+     */
+    private static function ensureDatabase(array $dbConfig): void
+    {
+        $base = $dbConfig + ['charset' => 'utf8mb4', 'options' => [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]];
+
+        // Already there and usable? Nothing to do.
+        try {
+            Database::connect($base);
+            Database::reset();
+
+            return;
+        } catch (\Throwable) {
+            Database::reset();
+        }
+
+        try {
+            $pdo = Database::connectServer($base);
+        } catch (\Throwable $e) {
+            throw new \RuntimeException('Could not connect to the database server: ' . self::friendlyDbError($e), 0, $e);
+        }
+
+        try {
+            $pdo->exec(sprintf(
+                'CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci',
+                str_replace('`', '', (string) $dbConfig['database'])
+            ));
+        } catch (\Throwable $e) {
+            throw new \RuntimeException(sprintf(
+                'The database "%s" does not exist and this MySQL account may not create one (%s). '
+                . 'Most shared hosting panels require you to create the database and its user yourself — '
+                . 'do that in the panel, then run the installer again with those details.',
+                $dbConfig['database'],
+                self::friendlyDbError($e, true)
+            ), 0, $e);
+        }
+    }
+
+    /**
+     * @param bool $whileCreating "Access denied" means different things when
+     *                            connecting (bad credentials) and when issuing
+     *                            CREATE DATABASE (credentials fine, no privilege).
+     */
+    private static function friendlyDbError(\Throwable $e, bool $whileCreating = false): string
+    {
+        $message = $e->getMessage();
+
+        return match (true) {
+            str_contains($message, 'Access denied') && $whileCreating
+                => 'the account has no CREATE privilege',
+            str_contains($message, 'Access denied')
+                => 'access denied — check the username and password',
+            str_contains($message, 'Unknown database')
+                => 'the database does not exist',
+            // [2002] is MySQL's "can't reach the server"; the wording that
+            // follows it differs per platform, so match on the code.
+            str_contains($message, '[2002]'),
+            str_contains($message, 'Connection refused'),
+            str_contains($message, 'No such host'),
+            str_contains($message, 'getaddrinfo'),
+            str_contains($message, 'timed out'),
+            str_contains($message, 'did not properly respond')
+                => 'the server is unreachable — check the host and port',
+            default => $message,
+        };
     }
 
     public static function testRedis(array $config): array
@@ -161,12 +284,13 @@ final class Installer
             'password' => (string) ($input['db_pass'] ?? ''),
         ];
 
-        // 1. Create the database if needed.
-        $pdo = Database::connectServer($dbConfig + ['charset' => 'utf8mb4', 'options' => [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]]);
-        $pdo->exec(sprintf(
-            'CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci',
-            str_replace('`', '', $dbConfig['database'])
-        ));
+        // 1. Make sure the database is usable.
+        //
+        // Prefer connecting to it directly: on shared hosting the database is
+        // created through the control panel and the account has no privilege to
+        // issue CREATE DATABASE, so attempting that first would fail an install
+        // that was otherwise perfectly fine.
+        self::ensureDatabase($dbConfig);
 
         // 2. Persist configuration.
         $appKey = (string) Config::get('app.key', '');

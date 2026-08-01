@@ -277,7 +277,7 @@ use App\Core\View;
 
     $('#test-db').addEventListener('click', async () => {
         const res = await post('/install/test-database', {
-            db_host: val('db_host'), db_port: val('db_port'),
+            db_host: val('db_host'), db_port: val('db_port'), db_name: val('db_name'),
             db_user: val('db_user'), db_pass: val('db_pass'),
         });
         const data = res.payload.data || {};

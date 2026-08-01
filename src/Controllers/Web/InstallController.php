@@ -43,6 +43,7 @@ final class InstallController extends Controller
         return $this->json(Installer::testDatabase([
             'host'     => $request->string('db_host', '127.0.0.1'),
             'port'     => $request->int('db_port', 3306),
+            'database' => $request->string('db_name'),
             'username' => $request->string('db_user', 'root'),
             'password' => (string) $request->input('db_pass', ''),
         ]));

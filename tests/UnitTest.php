@@ -256,6 +256,57 @@ final class UnitTest extends TestCase
         $this->assertSame('image/png', MimeGuard::safeServingMime('image/png'));
     }
 
+    // --- Installer --------------------------------------------------------
+
+    public function testInstallerReportsUnreachableDatabaseClearly(): void
+    {
+        $result = \App\Services\Installer::testDatabase([
+            'host'     => '10.255.255.1',
+            'port'     => 3306,
+            'database' => 'anything',
+            'username' => 'someone',
+            'password' => 'secret',
+        ]);
+
+        $this->assertFalse($result['ok']);
+        $this->assertContains('unreachable', $result['message'], 'A bad host must be reported in plain language');
+    }
+
+    public function testInstallerReportsBadCredentialsClearly(): void
+    {
+        $config = (array) config('database');
+
+        $result = \App\Services\Installer::testDatabase([
+            'host'     => $config['host'],
+            'port'     => $config['port'],
+            'database' => $config['database'],
+            'username' => 'definitely-not-a-user-' . Str::random(6),
+            'password' => 'definitely-not-the-password',
+        ]);
+
+        $this->assertFalse($result['ok']);
+        $this->assertContains('username and password', $result['message']);
+    }
+
+    public function testInstallerAcceptsAnExistingDatabase(): void
+    {
+        $config = (array) config('database');
+
+        $result = \App\Services\Installer::testDatabase([
+            'host'     => $config['host'],
+            'port'     => $config['port'],
+            'database' => $config['database'],
+            'username' => $config['username'],
+            'password' => $config['password'],
+        ]);
+
+        // The install database exists, so this must pass without needing the
+        // CREATE privilege that shared hosting accounts do not have.
+        $this->assertTrue($result['ok'], $result['message']);
+        $this->assertTrue($result['database_exists'] ?? false);
+        $this->assertFalse($result['can_create'] ?? true, 'An existing database must not be re-created');
+    }
+
     // --- Cache / Redis ----------------------------------------------------
 
     public function testCacheRoundTrip(): void

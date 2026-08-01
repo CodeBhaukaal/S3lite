@@ -248,6 +248,21 @@ final class App
             Logger::warning($e->getMessage(), ['path' => $request->path, 'status' => $status]);
         }
 
+        // Before installation, an unknown URL is almost always someone guessing
+        // at the setup address (installer.php, setup.php, …). Send them to the
+        // wizard instead of a dead end.
+        //
+        // Match the wizard's own routes exactly: a prefix test would also skip
+        // "/installer.php", which is precisely the guess we want to catch.
+        $isWizardRoute = $request->path === '/install' || str_starts_with($request->path, '/install/');
+
+        if ($status === 404
+            && !$request->wantsJson()
+            && !$isWizardRoute
+            && !\App\Middleware\EnsureInstalled::isInstalled()) {
+            return Response::redirect(url('/install'));
+        }
+
         $message = $status >= 500 && !$debug
             ? 'An unexpected error occurred.'
             : $e->getMessage();
