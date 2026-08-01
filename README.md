@@ -1,6 +1,8 @@
-# S3 Lite — Self-Hosted File Sharing &amp; Cloud Storage Platform in PHP
+# S3lite
 
-**Run your own file sharing server.** S3 Lite is a complete, self-hosted file
+### Self-hosted file sharing &amp; cloud storage platform in PHP
+
+**Run your own file sharing server.** S3lite is a complete, self-hosted file
 storage and sharing platform written in plain PHP 8.2 — a modern web panel, a
 full REST API, resumable chunked uploads, password-protected and expiring share
 links, per-user storage quotas, file versioning, FTP/FTPS/SFTP account
