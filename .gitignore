@@ -1,6 +1,9 @@
 /.env
 /.env.*
 !/.env.example
+
+# Local planning notes, not part of the published project.
+/plan.md
 /vendor/
 /node_modules/
 
