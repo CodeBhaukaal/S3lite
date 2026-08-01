@@ -1,18 +1,28 @@
-# S3 Lite
+# S3 Lite — Self-Hosted File Sharing &amp; Cloud Storage Platform in PHP
 
-**A self-hosted, S3-like file platform written in plain PHP 8.2.**
+**Run your own file sharing server.** S3 Lite is a complete, self-hosted file
+storage and sharing platform written in plain PHP 8.2 — a modern web panel, a
+full REST API, resumable chunked uploads, password-protected and expiring share
+links, per-user storage quotas, file versioning, FTP/FTPS/SFTP account
+management, live monitoring and a complete audit trail.
 
-Upload, organise and share files through a modern web panel or a complete REST
-API — with permanent and expiring share links, resumable chunked uploads,
-per-user quotas, file versioning, FTP/FTPS/SFTP account management, live
-monitoring and a full audit trail.
-
-No framework. No Composer packages. Drop it in a web root and open the browser —
-an install wizard does the rest.
+**No framework. No Composer packages. No build step.** Drop it into a web root,
+open the browser, and an install wizard does the rest. Works on XAMPP, WAMP,
+shared hosting, a VPS, or Docker.
 
 [![PHP](https://img.shields.io/badge/PHP-8.2%2B-777bb4)](https://www.php.net/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-96%20passing-brightgreen)](#tests)
+[![Self-hosted](https://img.shields.io/badge/self--hosted-yes-blue)](#quick-start-xampp--wamp--any-apache--php-host)
+
+**Contents** ·
+[Quick start](#quick-start-xampp--wamp--any-apache--php-host) ·
+[Admin password](#administrator-account--password) ·
+[Docker](#quick-start-docker) ·
+[Features](#what-it-does) ·
+[REST API](#api) ·
+[Security](#security) ·
+[Deployment](docs/DEPLOYMENT.md)
 
 ---
 
@@ -355,6 +365,66 @@ large uploads, or rely on chunked uploads, which are unaffected.
 
 ---
 
+## FAQ
+
+**Do I need Composer?**
+No. The project ships its own PSR-4 autoloader, router, view engine, migrator,
+validator, JWT implementation and Redis client. If a `vendor/autoload.php`
+happens to exist it is used, but nothing requires it.
+
+**Will it run on shared hosting?**
+Yes, as long as you get PHP 8.2 and a MySQL/MariaDB database. Point the domain
+at `public/`. If you cannot change the document root, the bundled `.htaccess`
+in the project root forwards requests into `public/` for you.
+
+**How large a file can it handle?**
+Anything, in practice. Files above the configured chunk size (8 MB by default)
+are uploaded in resumable parts, so PHP's `upload_max_filesize` and
+`post_max_size` stop being the ceiling. Downloads stream in 256 KB chunks and
+support HTTP range requests, so memory use stays flat regardless of file size.
+
+**Is Redis required?**
+No. It is used for caching and rate limiting when available. The bundled client
+is pure PHP, so the `php_redis` extension is not needed either, and if Redis is
+unreachable the platform falls back to a file cache automatically.
+
+**Can I use S3 or another object store instead of local disk?**
+Yes. Set `STORAGE_DRIVER=s3` and the `S3_*` variables. The driver signs requests
+with SigV4 over cURL, so it works with AWS S3, MinIO, Backblaze B2, Wasabi and
+other S3-compatible services without an SDK.
+
+**Does it really do SFTP?**
+It owns the accounts, isolated home directories, quotas, SSH keys, permissions
+and activity log; an actual daemon (OpenSSH, FileZilla Server, `atmoz/sftp`, …)
+handles the wire protocol. The panel generates the `sshd_config` for you, or the
+daemon can authenticate against the API. Uploads arriving over SFTP are indexed
+into the web panel by a sync job. See [docs/SFTP.md](docs/SFTP.md).
+
+**How do I reset a forgotten administrator password?**
+`php bin/console user:password you@example.com 'NewStrongPassword123'` — it does
+not ask for the old one. See
+[Administrator account & password](#administrator-account--password).
+
+**Can I drive everything from my own app?**
+Yes — the REST API covers every panel action, including user administration,
+FTP/SFTP accounts, jobs and backups. Authenticate with a JWT or a scoped API
+key. See [docs/API.md](docs/API.md) and `/api/v1/openapi.json`.
+
+---
+
+## Contributing
+
+Issues and pull requests are welcome. Please run the suite before opening a PR:
+
+```bash
+php bin/console test
+```
+
+Keep the existing style: no external dependencies, icons rather than emoji in
+the interface, and a test for anything that could regress.
+
+---
+
 ## License
 
-MIT.
+MIT — see [LICENSE](LICENSE). Use it commercially, modify it, ship it.
