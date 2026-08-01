@@ -24,6 +24,26 @@ use App\Core\View;
             <span class="auth__brand-name">S3 Lite installer</span>
         </div>
 
+        <?php if (($staleLock ?? null) !== null): ?>
+            <div class="alert alert-warning mb-4">
+                <?= icon('alert') ?>
+                <div class="alert__body">
+                    <div class="alert__title">A previous installation was found, but it does not work</div>
+                    <p style="margin:6px 0">
+                        This copy is marked as installed, yet <?= e($staleLock) ?>. That usually means the
+                        files were copied from another server or restored from a backup, bringing
+                        <span class="code-inline">storage/installed.lock</span> and
+                        <span class="code-inline">.env</span> along with them.
+                    </p>
+                    <p style="margin:0">
+                        Continue below to install against this server instead — the old settings will be
+                        overwritten. If you meant to keep the previous install, fix the database
+                        connection in <span class="code-inline">.env</span> rather than reinstalling.
+                    </p>
+                </div>
+            </div>
+        <?php endif; ?>
+
         <div class="wizard__steps">
             <div class="wizard__step is-active" data-step-indicator="1"><div class="wizard__step-dot">1</div>Requirements</div>
             <div class="wizard__step" data-step-indicator="2"><div class="wizard__step-dot">2</div>Database</div>

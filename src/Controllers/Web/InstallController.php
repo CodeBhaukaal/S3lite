@@ -12,13 +12,17 @@ final class InstallController extends Controller
 {
     public function show(Request $request): Response
     {
-        if (Installer::isInstalled()) {
+        $state = Installer::verifyInstall();
+
+        // Only turn people away when the existing install actually works.
+        if ($state['installed'] && $state['usable']) {
             return $this->redirect('/login', 'info', 'The platform is already installed.');
         }
 
         $guessedUrl = $this->guessUrl($request);
 
         return $this->view('install.wizard', [
+            'staleLock' => $state['installed'] ? $state['reason'] : null,
             'requirements' => Installer::requirements(),
             'defaults'     => [
                 'app_url'    => $guessedUrl,
@@ -45,7 +49,7 @@ final class InstallController extends Controller
 
     public function testDatabase(Request $request): Response
     {
-        if (Installer::isInstalled()) {
+        if (Installer::verifyInstall()['usable']) {
             return $this->error('already_installed', 'The platform is already installed.', 409);
         }
 
@@ -60,7 +64,7 @@ final class InstallController extends Controller
 
     public function testRedis(Request $request): Response
     {
-        if (Installer::isInstalled()) {
+        if (Installer::verifyInstall()['usable']) {
             return $this->error('already_installed', 'The platform is already installed.', 409);
         }
 
@@ -73,7 +77,7 @@ final class InstallController extends Controller
 
     public function testMail(Request $request): Response
     {
-        if (Installer::isInstalled()) {
+        if (Installer::verifyInstall()['usable']) {
             return $this->error('already_installed', 'The platform is already installed.', 409);
         }
 
@@ -116,7 +120,7 @@ final class InstallController extends Controller
 
     public function install(Request $request): Response
     {
-        if (Installer::isInstalled()) {
+        if (Installer::verifyInstall()['usable']) {
             return $this->error('already_installed', 'The platform is already installed.', 409);
         }
 

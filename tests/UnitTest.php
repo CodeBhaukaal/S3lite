@@ -307,6 +307,39 @@ final class UnitTest extends TestCase
         $this->assertFalse($result['can_create'] ?? true, 'An existing database must not be re-created');
     }
 
+    public function testInstallerVerifiesTheInstallIsUsable(): void
+    {
+        $state = \App\Services\Installer::verifyInstall();
+
+        $this->assertTrue($state['installed'], 'The test environment must be installed');
+        $this->assertTrue($state['usable'], (string) $state['reason']);
+        $this->assertNull($state['reason']);
+    }
+
+    public function testInstallerDetectsALockPointingAtAMissingDatabase(): void
+    {
+        // Copying a project between servers brings installed.lock along; the
+        // installer has to notice that the recorded install cannot work rather
+        // than refusing to run and sending the operator to a login that is
+        // equally broken.
+        $original = (array) config('database');
+
+        \App\Core\Config::set('database.database', 'database_that_does_not_exist_' . Str::random(8));
+        \App\Core\Database::reset();
+
+        try {
+            $state = \App\Services\Installer::verifyInstall();
+
+            $this->assertTrue($state['installed']);
+            $this->assertFalse($state['usable'], 'A lock pointing at a missing database must not count as installed');
+            $this->assertContains('unreachable', (string) $state['reason']);
+        } finally {
+            \App\Core\Config::set('database.database', $original['database']);
+            \App\Core\Database::reset();
+            \App\Core\Database::connect();
+        }
+    }
+
     // --- Mailer -----------------------------------------------------------
 
     public function testMailerSpeaksSmtp(): void

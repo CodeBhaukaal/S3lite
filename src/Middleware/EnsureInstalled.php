@@ -14,6 +14,8 @@ final class EnsureInstalled implements MiddlewareInterface
 {
     public function handle(Request $request, callable $next, array $params = []): Response
     {
+        // Deliberately the cheap file check: this runs on every request, and a
+        // deeper verification belongs to the installer alone.
         if (self::isInstalled()) {
             return $next($request);
         }

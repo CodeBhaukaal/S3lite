@@ -499,6 +499,54 @@ final class Installer
         return is_file(App::instance()->basePath('storage/installed.lock'));
     }
 
+    /**
+     * Is the recorded installation actually usable?
+     *
+     * The lock file travels with the source, so copying a project onto a new
+     * server (or restoring a backup of the whole folder) leaves a lock that
+     * points at a database which is not there. Without this check the installer
+     * refuses to run and the login it redirects to cannot work either — the
+     * site is bricked with no way forward.
+     *
+     * @return array{installed:bool, usable:bool, reason:?string}
+     */
+    public static function verifyInstall(): array
+    {
+        if (!self::isInstalled()) {
+            return ['installed' => false, 'usable' => false, 'reason' => null];
+        }
+
+        try {
+            Database::connect();
+        } catch (\Throwable $e) {
+            return [
+                'installed' => true,
+                'usable'    => false,
+                'reason'    => 'the configured database is unreachable (' . self::friendlyDbError($e) . ')',
+            ];
+        }
+
+        try {
+            if (!Database::tableExists('users')) {
+                return ['installed' => true, 'usable' => false, 'reason' => 'the database has no tables yet'];
+            }
+
+            $admins = (int) Database::scalar(
+                'SELECT COUNT(*) FROM users u INNER JOIN roles r ON r.id = u.role_id
+                 WHERE r.name = ? AND u.deleted_at IS NULL',
+                ['admin']
+            );
+
+            if ($admins === 0) {
+                return ['installed' => true, 'usable' => false, 'reason' => 'there is no administrator account'];
+            }
+        } catch (\Throwable $e) {
+            return ['installed' => true, 'usable' => false, 'reason' => 'the database is incomplete (' . $e->getMessage() . ')'];
+        }
+
+        return ['installed' => true, 'usable' => true, 'reason' => null];
+    }
+
     public static function timezones(): array
     {
         return \DateTimeZone::listIdentifiers();
