@@ -1,0 +1,21 @@
+# Normalise line endings so the repo stays consistent across Windows and Linux.
+* text=auto eol=lf
+
+# Shell scripts and the console entry point must keep LF to stay executable.
+*.sh    text eol=lf
+bin/*   text eol=lf
+
+# Never mangle binaries.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.pdf   binary
+*.zip   binary
+
+# Keep noise out of GitHub's language statistics and diffs.
+docs/**        linguist-documentation
+tests/**       linguist-language=PHP
+*.md           linguist-documentation

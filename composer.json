@@ -1,0 +1,27 @@
+{
+    "name": "s3lite/file-platform",
+    "description": "Self-hosted S3-like file sharing platform with REST API, admin panel and SFTP integration",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.2",
+        "ext-pdo": "*",
+        "ext-json": "*",
+        "ext-openssl": "*",
+        "ext-mbstring": "*",
+        "ext-fileinfo": "*"
+    },
+    "suggest": {
+        "ext-redis": "Native Redis client (a pure-PHP fallback is bundled)",
+        "ext-gd": "Image thumbnail generation",
+        "ext-zip": "Folder download as archive"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "src/"
+        }
+    },
+    "config": {
+        "optimize-autoloader": true
+    }
+}

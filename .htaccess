@@ -1,0 +1,18 @@
+# The application root is not the web root. Bare visits are forwarded into
+# public/; everything else here is inert because only public/ is linked to.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Never re-prefix a request that is already inside public/.
+    RewriteCond %{REQUEST_URI} !/public/
+    RewriteRule ^$ public/ [L]
+
+    RewriteCond %{REQUEST_URI} !/public/
+    RewriteRule ^((?!public/).*)$ public/$1 [L]
+</IfModule>
+
+Options -Indexes
+
+<FilesMatch "\.(env|lock|md|sql|log)$">
+    Require all denied
+</FilesMatch>

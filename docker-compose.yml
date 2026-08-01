@@ -1,0 +1,68 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8080:80"
+    environment:
+      APP_NAME: "S3 Lite"
+      APP_URL: "http://localhost:8080"
+      APP_ENV: production
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_DATABASE: s3lite
+      DB_USERNAME: s3lite
+      DB_PASSWORD: s3lite-secret
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # Set these on the first run to install non-interactively.
+      ADMIN_NAME: Administrator
+      ADMIN_EMAIL: admin@example.com
+      ADMIN_PASSWORD: ChangeMe123
+    volumes:
+      - storage:/var/www/html/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  db:
+    image: mariadb:11
+    environment:
+      MARIADB_ROOT_PASSWORD: root-secret
+      MARIADB_DATABASE: s3lite
+      MARIADB_USER: s3lite
+      MARIADB_PASSWORD: s3lite-secret
+    volumes:
+      - db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis:/data
+    restart: unless-stopped
+
+  # Optional SFTP front end. It shares the storage volume, so anything dropped
+  # here is picked up by the `sftp.sync` job and appears in the web panel.
+  sftp:
+    image: atmoz/sftp:alpine
+    ports:
+      - "2222:22"
+    volumes:
+      - storage:/home
+    restart: unless-stopped
+
+volumes:
+  storage:
+  db:
+  redis:

@@ -1,0 +1,27 @@
+#!/usr/bin/env php
+<?php
+/**
+ * S3 Lite command line interface.
+ *
+ * Usage: php bin/console <command> [arguments]
+ */
+declare(strict_types=1);
+
+if (PHP_SAPI !== 'cli') {
+    http_response_code(403);
+    exit("This script may only be run from the command line.\n");
+}
+
+$basePath = dirname(__DIR__);
+
+require $basePath . '/autoload.php';
+require $basePath . '/src/Core/helpers.php';
+
+use App\Console\Kernel;
+use App\Core\App;
+
+App::boot($basePath);
+
+$kernel = new Kernel($basePath);
+
+exit($kernel->run(array_slice($argv, 1)));
