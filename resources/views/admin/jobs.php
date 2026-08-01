@@ -3,7 +3,7 @@
 use App\Core\View;
 
 View::extend('layouts.app');
-View::share('title', 'Jobs &amp; backups');
+View::share('title', 'Jobs & backups');
 
 /** @var list<array> $jobs */
 /** @var array $stats */
@@ -72,14 +72,94 @@ View::startSection('content');
             <?php endforeach; ?>
         </div>
 
-        <div class="alert alert-info mt-4">
-            <?= icon('terminal') ?>
-            <div class="alert__body">
-                <div class="alert__title">Automate with cron / Task Scheduler</div>
-                <pre class="code-block mt-2">* * * * *   php <?= e(base_path('bin/console')) ?> queue:run-once
-0 3 * * *   php <?= e(base_path('bin/console')) ?> job:run cleanup
-*/5 * * * * php <?= e(base_path('bin/console')) ?> job:run metrics.sample</pre>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card__head">
+        <?= icon('clock') ?>
+        <h2>Automatic maintenance (cron)</h2>
+        <?php if ($cron['never_run']): ?>
+            <span class="badge badge-warning"><?= icon('alert') ?> never run</span>
+        <?php else: ?>
+            <span class="badge badge-success"><span class="dot dot-success"></span> last run <?= e(time_ago($cron['last_activity'])) ?></span>
+        <?php endif; ?>
+    </div>
+    <div class="card__body">
+        <p class="muted small">
+            Cron is optional — everything here can be run by hand. Schedule it and the platform
+            keeps itself tidy: webhooks get delivered, trash is purged, metrics are recorded and
+            SFTP uploads are indexed.
+        </p>
+
+        <p class="muted small">
+            <strong>One entry is enough.</strong> Point cron at <span class="code-inline">public/cron.php</span>
+            every 5–10 minutes; it works out for itself which tasks are due.
+        </p>
+
+        <div class="label mt-3">Control panel: schedule this PHP file</div>
+        <div class="input-copy">
+            <input class="input mono" id="cron-file" readonly value="<?= e($cron['file']) ?>">
+            <button class="btn btn-icon" type="button" data-copy="#cron-file" data-copy-label="Path"><?= icon('clipboard') ?></button>
+        </div>
+
+        <div class="label mt-3">Or as a full command</div>
+        <div class="input-copy">
+            <input class="input mono" id="cron-command" readonly value="<?= e($cron['command']) ?>">
+            <button class="btn btn-icon" type="button" data-copy="#cron-command" data-copy-label="Command"><?= icon('clipboard') ?></button>
+        </div>
+        <div class="hint">
+            <?php if (!$cron['php_found']): ?>
+                The PHP command-line binary could not be located from the web server, so
+                <span class="code-inline">php</span> above is a placeholder — replace it with the real
+                path.
+            <?php endif; ?>
+            On shared hosting it is often <span class="code-inline">/usr/local/bin/php</span>
+            or <span class="code-inline">/opt/cpanel/ea-php82/root/usr/bin/php</span> — check your panel's
+            “Select PHP version” page if the job stays silent.
+        </div>
+
+        <div class="label mt-3">No cron on your host? Call this URL instead</div>
+        <?php if ($cron['url'] === null): ?>
+            <div class="alert alert-warning">
+                <?= icon('lock') ?>
+                <div class="alert__body">
+                    Triggering over a URL is disabled. Set <span class="code-inline">CRON_TOKEN</span>
+                    in your <span class="code-inline">.env</span> to switch it on, then reload this page.
+                </div>
             </div>
+        <?php else: ?>
+            <div class="input-copy">
+                <input class="input mono" id="cron-url" readonly value="<?= e($cron['url']) ?>">
+                <button class="btn btn-icon" type="button" data-copy="#cron-url" data-copy-label="URL"><?= icon('clipboard') ?></button>
+            </div>
+            <div class="hint">
+                Keep this URL secret — it carries the token. Point a free service such as
+                cron-job.org at it every 10 minutes.
+            </div>
+        <?php endif; ?>
+
+        <div class="table-wrap mt-4">
+            <table class="table">
+                <thead><tr><th>Task</th><th>Runs</th><th class="nowrap">Last run</th><th class="nowrap">Next due</th><th>Status</th></tr></thead>
+                <tbody>
+                <?php foreach ($cron['schedule'] as $row): ?>
+                    <tr>
+                        <td class="mono small"><?= e($row['task']) ?></td>
+                        <td class="nowrap"><?= $row['interval'] === 0 ? 'every run' : e(\App\Services\MetricsService::humanDuration((int) $row['interval'])) ?></td>
+                        <td class="nowrap faint"><?= $row['last_run'] === null ? 'never' : e(time_ago($row['last_run'])) ?></td>
+                        <td class="nowrap faint"><?= $row['next_run'] === null ? '—' : e(date('d M H:i', strtotime((string) $row['next_run']))) ?></td>
+                        <td>
+                            <?php if ($row['due']): ?>
+                                <span class="badge badge-warning">due</span>
+                            <?php else: ?>
+                                <span class="badge badge-success"><?= icon('check') ?> scheduled</span>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
         </div>
     </div>
 </div>

@@ -15,6 +15,9 @@ return [
 
     'log_level'   => Env::get('LOG_LEVEL', 'info'),
 
+    // Shared secret for triggering public/cron.php over HTTP. Empty disables it.
+    'cron_token'  => (string) Env::get('CRON_TOKEN', ''),
+
     'jwt' => [
         'secret'      => (string) Env::get('JWT_SECRET', ''),
         'access_ttl'  => (int) Env::get('JWT_ACCESS_TTL', 3600),

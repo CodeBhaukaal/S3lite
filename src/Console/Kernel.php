@@ -40,6 +40,8 @@ final class Kernel
         'job:list'         => 'List available job types',
         'queue:work'       => 'Process queued jobs until the queue is empty',
         'queue:run-once'   => 'Process a small batch of queued jobs (cron friendly)',
+        'cron:run'         => 'Run every maintenance task that is due (one cron entry does it all)',
+        'cron:status'      => 'Show the cron schedule, last runs and the setup line to paste',
         'backup:create'    => 'Create a database backup',
         'backup:list'      => 'List existing backups',
         'sftp:sync'        => 'Index files uploaded over SFTP',
@@ -77,6 +79,8 @@ final class Kernel
                 'job:list'         => $this->jobList(),
                 'queue:work'       => $this->queueWork(1000),
                 'queue:run-once'   => $this->queueWork(20),
+                'cron:run'         => $this->cronRun($args),
+                'cron:status'      => $this->cronStatus(),
                 'backup:create'    => $this->backupCreate($args),
                 'backup:list'      => $this->backupList(),
                 'sftp:sync'        => $this->sftpSync($args),
@@ -429,6 +433,75 @@ final class Kernel
         $this->success("Processed {$total['processed']} job(s), {$total['failed']} failed.");
 
         return $total['failed'] > 0 ? 1 : 0;
+    }
+
+    private function cronRun(array $args): int
+    {
+        Database::connect();
+
+        $options = $this->parseOptions($args);
+        $report = Scheduler::run(300, isset($options['force']));
+
+        if ($report['skipped']) {
+            $this->warn('Skipped: ' . (string) $report['reason']);
+
+            return 0;
+        }
+
+        if ($report['ran'] === []) {
+            $this->info('Nothing due.');
+
+            return 0;
+        }
+
+        foreach ($report['ran'] as $task => $result) {
+            $this->line('  ' . str_pad((string) $task, 18) . $result);
+        }
+
+        $this->success('Finished in ' . $report['duration_ms'] . 'ms.');
+
+        return 0;
+    }
+
+    private function cronStatus(): int
+    {
+        Database::connect();
+
+        $this->heading('Cron schedule');
+        $this->line('  ' . str_pad('TASK', 18) . str_pad('EVERY', 12) . str_pad('LAST RUN', 21) . 'DUE NOW');
+
+        foreach (Scheduler::status() as $row) {
+            $this->line(
+                '  ' . str_pad((string) $row['task'], 18)
+                . str_pad($row['interval'] === 0 ? 'every run' : MetricsService::humanDuration((int) $row['interval']), 12)
+                . str_pad((string) ($row['last_run'] ?? 'never'), 21)
+                . ($row['due'] ? 'yes' : 'no')
+            );
+        }
+
+        $this->heading('Set it up');
+
+        $file = $this->basePath . '/public/cron.php';
+        $this->line('  Run this file every 5-10 minutes. One entry covers everything.');
+        $this->line('');
+        $this->line('  Command:  ' . PHP_BINARY . ' ' . $file);
+
+        $token = Scheduler::token();
+
+        if ($token === '') {
+            $this->line('');
+            $this->warn('CRON_TOKEN is not set, so triggering over a URL is disabled.');
+            $this->line('       Add CRON_TOKEN to .env to enable it.');
+        } else {
+            $this->line('  URL:      ' . rtrim((string) Config::get('app.url'), '/') . '/cron.php?token=' . $token);
+        }
+
+        if (Scheduler::hasNeverRun()) {
+            $this->line('');
+            $this->warn('Cron has never run on this install yet.');
+        }
+
+        return 0;
     }
 
     private function backupCreate(array $args): int

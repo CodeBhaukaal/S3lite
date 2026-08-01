@@ -3,7 +3,7 @@
 use App\Core\View;
 
 View::extend('layouts.app');
-View::share('title', 'Roles &amp; permissions');
+View::share('title', 'Roles & permissions');
 
 /** @var list<array> $roles */
 /** @var array<string, list<array>> $permissions */

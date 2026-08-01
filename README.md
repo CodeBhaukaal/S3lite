@@ -254,17 +254,47 @@ php bin/console routes            # list every route
 php bin/console test              # run the test suite
 ```
 
-### Scheduling
+### Scheduling — one entry is enough
+
+Cron is **optional**: everything below can be run by hand from
+**Admin → Jobs & backups**. Schedule it and the platform maintains itself.
+
+Most hosting panels only let you pick a PHP file, so there is a single
+self-scheduling entry point that works out which tasks are due:
 
 ```cron
-* * * * *   php /path/to/s3/bin/console queue:run-once
-*/5 * * * * php /path/to/s3/bin/console job:run metrics.sample
-0 3 * * *   php /path/to/s3/bin/console job:run cleanup
-0 4 * * *   php /path/to/s3/bin/console job:run backup
-*/10 * * * * php /path/to/s3/bin/console sftp:sync
+*/5 * * * * /usr/local/bin/php /path/to/s3/public/cron.php
 ```
 
-On Windows, create equivalent Task Scheduler entries calling `php.exe bin\console`.
+That one line covers the queue (every run), metrics samples (5 min), SFTP sync
+(10 min), cleanup and backups (daily) and an integrity check (weekly). Overlapping
+runs are prevented by a lock file.
+
+**No cron on your host?** Set `CRON_TOKEN` in `.env` and call the same file over
+HTTP from a free service such as cron-job.org:
+
+```
+https://your-site/cron.php?token=YOUR_CRON_TOKEN
+```
+
+Without `CRON_TOKEN` the URL form stays disabled rather than leaving an open
+endpoint. The panel shows the exact path, command and URL to copy, plus when each
+task last ran.
+
+```bash
+php bin/console cron:run      # run whatever is due, now
+php bin/console cron:status   # schedule, last runs and the line to paste
+```
+
+If you prefer one entry per task, the individual commands still work:
+
+```cron
+* * * * *    php /path/to/s3/bin/console queue:run-once
+*/5 * * * *  php /path/to/s3/bin/console job:run metrics.sample
+0 3 * * *    php /path/to/s3/bin/console job:run cleanup
+```
+
+On Windows, create equivalent Task Scheduler entries calling `php.exe`.
 
 ---
 

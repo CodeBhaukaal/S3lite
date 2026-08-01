@@ -38,6 +38,7 @@ final class WebTest extends TestCase
             'testAdminSettingsSave',
             'testFileActionMenuIsCompleteAndUnclipped',
             'testInterfaceIsMobileReady',
+            'testCronEntryPoint',
             'testNoEmojiInTheInterface',
             'testSecurityHeadersArePresent',
             'testUnknownPageReturns404',
@@ -402,6 +403,51 @@ final class WebTest extends TestCase
         // Column headings are copied into cells for the stacked layout.
         $this->assertContains('labelTableCells', $js, 'Table cells must be labelled for the stacked layout');
         $this->assertContains("setAttribute('data-label'", $js, 'Cell labels must be applied from the column headings');
+    }
+
+    /**
+     * Hosting panels that can only schedule a PHP file need one self-scheduling
+     * entry point, and it must not be an open endpoint when reachable over HTTP.
+     */
+    public function testCronEntryPoint(): void
+    {
+        $guest = new HttpClient(Runner::baseUrl());
+
+        // Never runnable without the shared secret.
+        $guest->get('/cron.php');
+        $this->assertSame(403, $guest->lastStatus, 'cron.php must refuse an unauthenticated request');
+        $this->assertSame('forbidden', $guest->errorCode());
+
+        $guest->get('/cron.php', ['token' => 'not-the-right-token']);
+        $this->assertSame(403, $guest->lastStatus, 'cron.php must refuse a wrong token');
+
+        $token = (string) config('app.cron_token');
+
+        if ($token === '') {
+            $this->skip('CRON_TOKEN is not configured on this install');
+        }
+
+        $guest->get('/cron.php', ['token' => $token]);
+        $this->assertSame(200, $guest->lastStatus, $guest->lastBody);
+        $this->assertTrue($guest->succeeded());
+
+        $data = (array) $guest->data();
+        $this->assertArrayHasKey('ran', $data);
+        $this->assertArrayHasKey('duration_ms', $data);
+
+        // The queue has no interval, so a run always covers it.
+        $this->assertArrayHasKey('queue', (array) $data['ran'], 'Every tick must drain the queue');
+
+        // A second call must not re-run the interval-based tasks.
+        $guest->get('/cron.php', ['token' => $token]);
+        $second = (array) $guest->data();
+        $this->assertCount(1, (array) $second['ran'], 'Only the queue should be due immediately after a run');
+
+        // The panel must expose the setup details.
+        $page = $this->panel()->get('/admin/jobs')->lastBody;
+        $this->assertContains('Automatic maintenance', $page, 'The jobs page must document cron setup');
+        $this->assertContains('cron.php', $page, 'The jobs page must name the cron file');
+        $this->assertNotContains('&amp;amp;', $page, 'Page titles must not be double-escaped');
     }
 
     public function testNoEmojiInTheInterface(): void

@@ -179,6 +179,11 @@ final class Installer
             $jwtSecret = Str::random(64);
         }
 
+        $cronToken = (string) Config::get('app.cron_token', '');
+        if ($cronToken === '') {
+            $cronToken = Str::random(48);
+        }
+
         $envPath = $base . '/.env';
         if (!is_file($envPath) && is_file($base . '/.env.example')) {
             copy($base . '/.env.example', $envPath);
@@ -197,6 +202,7 @@ final class Installer
             'DB_USERNAME'   => $dbConfig['username'],
             'DB_PASSWORD'   => $dbConfig['password'],
             'JWT_SECRET'    => $jwtSecret,
+            'CRON_TOKEN'    => $cronToken,
             'REDIS_ENABLED' => ($input['redis_enabled'] ?? false) ? 'true' : 'false',
             'REDIS_HOST'    => (string) ($input['redis_host'] ?? '127.0.0.1'),
             'REDIS_PORT'    => (string) ($input['redis_port'] ?? 6379),
@@ -206,6 +212,7 @@ final class Installer
         // Reload configuration with the new values.
         Config::set('app.key', $appKey);
         Config::set('app.jwt.secret', $jwtSecret);
+        Config::set('app.cron_token', $cronToken);
         Config::set('app.url', rtrim((string) ($input['app_url'] ?? ''), '/'));
         Config::set('app.name', (string) ($input['app_name'] ?? 'S3 Lite'));
         Config::set('database.host', $dbConfig['host']);

@@ -427,11 +427,24 @@ final class AdminController extends Controller
 
     public function jobs(Request $request): Response
     {
+        $cronToken = \App\Console\Scheduler::token();
+
         return $this->view('admin.jobs', [
             'jobs'    => JobService::recent(50),
             'stats'   => \App\Models\Job::stats(),
             'types'   => JobService::TYPES,
             'backups' => BackupService::list(),
+            'cron'    => [
+                'schedule'     => \App\Console\Scheduler::status(),
+                'never_run'    => \App\Console\Scheduler::hasNeverRun(),
+                'last_activity' => \App\Console\Scheduler::lastActivity(),
+                'file'         => $this->basePathFor('public/cron.php'),
+                'command'      => (\App\Console\Scheduler::phpBinary() ?? 'php')
+                                  . ' ' . $this->basePathFor('public/cron.php'),
+                'php_found'    => \App\Console\Scheduler::phpBinary() !== null,
+                'url'          => $cronToken === '' ? null : url('/cron.php?token=' . $cronToken),
+                'token_set'    => $cronToken !== '',
+            ],
         ]);
     }
 
@@ -680,6 +693,11 @@ final class AdminController extends Controller
         AuditService::log('ip_rule.delete', 'ip_rule', $id, 'Deleted IP rule');
 
         return $this->back($request, 'success', 'IP rule removed.');
+    }
+
+    private function basePathFor(string $relative): string
+    {
+        return str_replace('\\', '/', \App\Core\App::instance()->basePath($relative));
     }
 
     private function resolveUser(string $id): array
