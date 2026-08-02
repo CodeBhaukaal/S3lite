@@ -3,12 +3,24 @@ FROM php:8.2-apache
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libzip-dev libpng-dev libjpeg62-turbo-dev libfreetype6-dev \
+        libssl-dev libcurl4-openssl-dev libssh2-1 \
         default-mysql-client cron \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
-    && docker-php-ext-install -j"$(nproc)" pdo_mysql mysqli gd zip opcache \
+    && docker-php-ext-configure ftp --with-openssl-dir=/usr \
+    && docker-php-ext-install -j"$(nproc)" pdo_mysql mysqli gd zip opcache ftp \
     && pecl install redis && docker-php-ext-enable redis \
     && a2enmod rewrite headers \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Storage backends need these: ext-ftp drives FTP and FTPS, and SFTP rides on
+# cURL's sftp:// protocol. Fail the build rather than ship an image where the
+# Storage page quietly reports half its drivers as unavailable.
+RUN php -r 'exit(extension_loaded("ftp") ? 0 : 1);' \
+        || (echo "ext-ftp missing — FTP and FTPS backends would not work" && exit 1) \
+    && php -r 'exit(function_exists("ftp_ssl_connect") ? 0 : 1);' \
+        || (echo "ftp_ssl_connect missing — FTPS backends would not work" && exit 1) \
+    && php -r 'exit(in_array("sftp", curl_version()["protocols"], true) ? 0 : 1);' \
+        || echo "note: this cURL has no SFTP support; FTP, FTPS and S3 backends still work"
 
 # Uploads need generous limits; the app enforces its own maximum on top.
 RUN { \

@@ -52,14 +52,31 @@ services:
       - redis:/data
     restart: unless-stopped
 
-  # Optional SFTP front end. It shares the storage volume, so anything dropped
-  # here is picked up by the `sftp.sync` job and appears in the web panel.
+  # Optional SFTP front end, off by default. Start it with:
+  #     docker compose --profile sftp up -d
+  #
+  # It has to be opt-in because atmoz/sftp exits when it is given no accounts,
+  # and an always-on service with none would restart forever.
+  #
+  # Accounts are `user:password[:e][:uid[:gid]]`, space separated. Override
+  # them — the default below is a placeholder, not a usable password:
+  #     SFTP_USERS="alice:s3cret:1001 bob:hunter2:1002" docker compose --profile sftp up -d
   sftp:
     image: atmoz/sftp:alpine
+    profiles: ["sftp"]
+    command: ${SFTP_USERS:-s3lite:changeme:1001}
     ports:
       - "2222:22"
     volumes:
-      - storage:/home
+      # /home must line up with storage/sftp, because that is where the
+      # `sftp.sync` job looks for each account's uploads. Mounting the whole
+      # storage volume here would put them in storage/<user> instead, where
+      # nothing would ever index them.
+      - type: volume
+        source: storage
+        target: /home
+        volume:
+          subpath: sftp
     restart: unless-stopped
 
 volumes:

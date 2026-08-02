@@ -3,6 +3,15 @@ set -e
 
 cd /var/www/html
 
+# Only the web server needs the database wait and the first-run installer.
+# One-off commands — `docker compose run app php bin/console …`, or a shell to
+# look around with — should start immediately instead of sitting through a
+# sixty second wait for a database they may not even use.
+case "${1:-}" in
+    apache2-foreground|apache2|httpd|httpd-foreground) ;;
+    *) exec "$@" ;;
+esac
+
 echo "[s3lite] waiting for the database at ${DB_HOST:-db}:${DB_PORT:-3306} ..."
 for i in $(seq 1 60); do
     if php -r '
@@ -21,6 +30,46 @@ if [ ! -f .env ]; then
     cp .env.example .env
     php bin/console key:generate
 fi
+
+# In a container the environment is the source of truth, not the file.
+#
+# .env lives in the container's own layer while storage/installed.lock lives in
+# a volume, so rebuilding the image hands the new container a pristine .env
+# copied from .env.example — pointing at 127.0.0.1 — while the lock still says
+# "installed". The installer is then skipped and every database-backed page
+# fails. Re-applying the environment on each boot keeps the two in step.
+php -r '
+require "/var/www/html/autoload.php";
+
+$values = [];
+$keys = [
+    "APP_NAME", "APP_ENV", "APP_URL", "APP_DEBUG", "APP_TIMEZONE", "FORCE_HTTPS",
+    "DB_HOST", "DB_PORT", "DB_DATABASE", "DB_USERNAME", "DB_PASSWORD",
+    "REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD",
+    "MAIL_DRIVER", "MAIL_HOST", "MAIL_PORT", "MAIL_ENCRYPTION",
+    "MAIL_USERNAME", "MAIL_PASSWORD", "MAIL_FROM", "MAIL_FROM_NAME",
+    "STORAGE_DRIVER", "MAX_UPLOAD_SIZE", "CHUNK_SIZE", "DEFAULT_QUOTA",
+];
+
+foreach ($keys as $key) {
+    $value = getenv($key);
+
+    // An unset variable leaves whatever is already in the file alone; only
+    // DB_PASSWORD may legitimately be set to an empty string.
+    if ($value !== false && ($value !== "" || $key === "DB_PASSWORD")) {
+        $values[$key] = $value;
+    }
+}
+
+if (getenv("REDIS_HOST") !== false) {
+    $values["REDIS_ENABLED"] = "true";
+}
+
+if ($values !== []) {
+    App\Core\Env::write("/var/www/html/.env", $values);
+    echo "[s3lite] applied " . count($values) . " setting(s) from the environment\n";
+}
+'
 
 # Non-interactive first-run install when the operator supplied an admin account.
 if [ ! -f storage/installed.lock ] && [ -n "${ADMIN_EMAIL}" ] && [ -n "${ADMIN_PASSWORD}" ]; then

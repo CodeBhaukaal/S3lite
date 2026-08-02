@@ -1,0 +1,38 @@
+# Anything listed here stays out of the build context, so `COPY . /var/www/html`
+# ships the application and nothing else.
+
+# Machine-specific configuration. The entrypoint writes a fresh .env from
+# .env.example on first boot; baking one in would point the container at the
+# developer's own database and leak their APP_KEY into the image.
+.env
+.env.*
+!.env.example
+
+# Runtime state. installed.lock is the dangerous one: copied into the image it
+# lands in the storage volume on first boot, the entrypoint decides the site is
+# already installed, and the installer never runs.
+storage/*
+!storage/.gitkeep
+
+# Local uploads, backups, logs and caches are not part of the application.
+*.zip
+*.tar
+*.tar.gz
+*.sql
+*.sqlite
+
+# Development leftovers.
+.git
+.gitattributes
+.gitignore
+.github
+.claude
+.idea
+.vscode
+node_modules
+vendor
+plan.md
+
+# The image builds its own Apache/PHP config; these are only for humans.
+docker-compose.yml
+docker-compose.*.yml
