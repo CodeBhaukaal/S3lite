@@ -130,11 +130,26 @@ final class MetricsService
         ];
     }
 
-    /** @return array{total:int, used:int, free:int, percent:float, stored:int, path:string} */
+    /**
+     * Headroom on the default backend. Remote backends report zeros, which
+     * callers read as "unknown" rather than "full".
+     *
+     * @return array{total:int, used:int, free:int, percent:float, stored:int, path:string, backend:string, driver:string}
+     */
     public static function disk(): array
     {
-        $driver = StorageManager::disk();
-        $usage = $driver->diskUsage();
+        try {
+            $driver = StorageManager::disk();
+            $usage = $driver->diskUsage();
+            $path = $driver instanceof LocalDriver ? $driver->root() : $driver->name();
+            $backend = $driver->name();
+            $type = $driver->driver();
+        } catch (\Throwable $e) {
+            $usage = ['total' => 0, 'used' => 0, 'free' => 0];
+            $path = $e->getMessage();
+            $backend = StorageManager::defaultSlug();
+            $type = 'unavailable';
+        }
 
         $stored = (int) Database::scalar('SELECT COALESCE(SUM(size), 0) FROM files') ?: 0;
 
@@ -144,7 +159,9 @@ final class MetricsService
             'free'    => $usage['free'],
             'percent' => $usage['total'] > 0 ? round(($usage['used'] / $usage['total']) * 100, 1) : 0.0,
             'stored'  => $stored,
-            'path'    => $driver instanceof LocalDriver ? $driver->root() : $driver->name(),
+            'path'    => $path,
+            'backend' => $backend,
+            'driver'  => $type,
         ];
     }
 
@@ -250,8 +267,8 @@ final class MetricsService
             $driver->delete($probe);
 
             $checks['storage'] = $readBack === 'ok'
-                ? ['status' => 'ok', 'message' => 'Readable and writable']
-                : ['status' => 'fail', 'message' => 'Storage is not writable'];
+                ? ['status' => 'ok', 'message' => 'Readable and writable (' . $driver->driver() . ': ' . $driver->name() . ')']
+                : ['status' => 'fail', 'message' => 'Storage is not writable (' . $driver->name() . ')'];
         } catch (\Throwable $e) {
             $checks['storage'] = ['status' => 'fail', 'message' => $e->getMessage()];
         }

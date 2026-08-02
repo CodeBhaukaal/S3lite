@@ -23,7 +23,7 @@ final class FileService
      * Store an uploaded/temporary file.
      *
      * @param array{path:string, name:string, size?:int} $upload
-     * @param array{folder_id?:?int, tags?:list<string>, source?:string, overwrite_file_id?:int, note?:string} $options
+     * @param array{folder_id?:?int, tags?:list<string>, source?:string, overwrite_file_id?:int, note?:string, disk?:?string} $options
      */
     public static function store(int $userId, array $upload, array $options = []): array
     {
@@ -114,8 +114,12 @@ final class FileService
             }
         }
 
-        $disk = StorageManager::disk();
+        $disk = StorageManager::disk(StorageBackendService::resolveForUpload($options['disk'] ?? null));
         $storagePath = StorageManager::buildPath($userId, $checksum, (string) $inspection['extension']);
+
+        // Read metadata off the local temp file: once the bytes are on a
+        // remote backend there is no path left to inspect.
+        $meta = self::extractMeta($sourcePath, (string) $inspection['mime']);
 
         if (!$disk->put($sourcePath, $storagePath, true)) {
             throw new HttpException(500, 'Failed to write the file to storage.', 'storage_write_failed');
@@ -137,7 +141,7 @@ final class FileService
             'storage_path'  => $storagePath,
             'version'       => 1,
             'tags'          => array_values(array_filter((array) ($options['tags'] ?? []))),
-            'meta'          => self::extractMeta($disk->absolutePath($storagePath), (string) $inspection['mime']),
+            'meta'          => $meta,
             'source'        => (string) ($options['source'] ?? 'web'),
             'scanned_at'    => $scan['result'] === VirusScanner::SKIPPED ? null : date('Y-m-d H:i:s'),
             'scan_result'   => $scan['result'],
@@ -194,7 +198,8 @@ final class FileService
             throw new HttpException(404, 'File not found.', 'file_not_found');
         }
 
-        $disk = StorageManager::disk();
+        // New versions land on the same backend as the file they replace.
+        $disk = StorageManager::disk((string) $file['disk']);
         $currentVersion = (int) $file['version'];
 
         // Archive the current content as a version before overwriting.
@@ -208,6 +213,7 @@ final class FileService
                 'version'      => $currentVersion,
                 'size'         => (int) $file['size'],
                 'checksum'     => (string) $file['checksum'],
+                'disk'         => $disk->name(),
                 'storage_path' => $archivePath,
                 'mime'         => (string) $file['mime'],
                 'created_by'   => $userId,
@@ -243,7 +249,8 @@ final class FileService
         // Retention: drop the oldest versions past the configured limit.
         $keep = (int) SettingService::get('versions_kept', Config::get('storage.versions_kept', 10));
         foreach (FileVersion::prune($fileId, $keep) as $pruned) {
-            $disk->delete((string) $pruned['storage_path']);
+            StorageManager::disk((string) ($pruned['disk'] ?: $disk->name()))
+                ->delete((string) $pruned['storage_path']);
             QuotaService::release($userId, (int) $pruned['size']);
         }
 
@@ -273,7 +280,7 @@ final class FileService
             throw new HttpException(404, 'Version not found.', 'version_not_found');
         }
 
-        $disk = StorageManager::disk();
+        $disk = StorageManager::disk((string) $file['disk']);
         $currentVersion = (int) $file['version'];
         $archivePath = StorageManager::versionPath((string) $file['storage_path'], $currentVersion);
 
@@ -285,6 +292,7 @@ final class FileService
                 'version'      => $currentVersion,
                 'size'         => (int) $file['size'],
                 'checksum'     => (string) $file['checksum'],
+                'disk'         => $disk->name(),
                 'storage_path' => $archivePath,
                 'mime'         => (string) $file['mime'],
                 'created_by'   => $userId,
@@ -295,7 +303,11 @@ final class FileService
 
         $restoredPath = StorageManager::buildPath($userId, (string) $target['checksum'], (string) $file['extension']);
 
-        if (!$disk->copy((string) $target['storage_path'], $restoredPath)) {
+        // The archived version may predate a backend migration, so read it
+        // from wherever it actually lives.
+        $versionDisk = StorageManager::disk((string) ($target['disk'] ?: $file['disk']));
+
+        if (!StorageManager::copyAcross($versionDisk, (string) $target['storage_path'], $disk, $restoredPath)) {
             throw new HttpException(500, 'Unable to restore that version.', 'restore_failed');
         }
 
@@ -323,8 +335,9 @@ final class FileService
             throw new HttpException(422, 'A file name is required.', 'invalid_name');
         }
 
+        // Remote backends have no local path; MimeGuard then checks the name alone.
         $inspection = MimeGuard::inspect(
-            (string) (StorageManager::disk()->absolutePath((string) $file['storage_path']) ?? ''),
+            (string) (StorageManager::disk((string) $file['disk'])->absolutePath((string) $file['storage_path']) ?? ''),
             $name
         );
 
@@ -367,7 +380,7 @@ final class FileService
 
         QuotaService::assert($userId, (int) $file['size']);
 
-        $disk = StorageManager::disk();
+        $disk = StorageManager::disk((string) $file['disk']);
         $newPath = StorageManager::buildPath($userId, (string) $file['checksum'], (string) $file['extension']);
 
         if (!$disk->copy((string) $file['storage_path'], $newPath)) {
@@ -461,18 +474,19 @@ final class FileService
             throw new HttpException(404, 'File not found.', 'file_not_found');
         }
 
-        $disk = StorageManager::disk();
+        $disk = StorageManager::disk((string) $file['disk']);
         $freed = (int) $file['size'];
 
         foreach (FileVersion::forFile($fileId) as $version) {
-            $disk->delete((string) $version['storage_path']);
+            StorageManager::disk((string) ($version['disk'] ?: $file['disk']))
+                ->delete((string) $version['storage_path']);
             $freed += (int) $version['size'];
         }
 
         // Other records may share the same bytes; only unlink when unreferenced.
         $shared = (int) Database::scalar(
-            'SELECT COUNT(*) FROM files WHERE storage_path = ? AND id != ?',
-            [$file['storage_path'], $fileId]
+            'SELECT COUNT(*) FROM files WHERE storage_path = ? AND disk = ? AND id != ?',
+            [$file['storage_path'], $file['disk'], $fileId]
         );
 
         if ($shared === 0) {

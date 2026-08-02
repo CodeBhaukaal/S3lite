@@ -16,6 +16,7 @@ use App\Controllers\Api\FileApiController;
 use App\Controllers\Api\FolderApiController;
 use App\Controllers\Api\ShareApiController;
 use App\Controllers\Api\SftpApiController;
+use App\Controllers\Api\StorageApiController;
 use App\Controllers\Api\SystemApiController;
 use App\Controllers\Api\UserApiController;
 use App\Controllers\Api\WebhookApiController;
@@ -161,6 +162,17 @@ $router->group(['prefix' => '/api/v1', 'middleware' => ['cors']], static functio
         $router->post('/backups', SystemApiController::class . '@createBackup')->middleware('api.scope:jobs:write');
         $router->get('/backups/{name}', SystemApiController::class . '@downloadBackup')->middleware('api.scope:jobs:write');
         $router->delete('/backups/{name}', SystemApiController::class . '@deleteBackup')->middleware('api.scope:jobs:write');
+
+        // Storage backends (local disk, FTP/FTPS/SFTP servers, S3 buckets)
+        $router->get('/storage-backends', StorageApiController::class . '@index')->middleware('api.scope:admin');
+        $router->post('/storage-backends', StorageApiController::class . '@store')->middleware('api.scope:admin');
+        $router->get('/storage-backends/{id}', StorageApiController::class . '@show')->middleware('api.scope:admin');
+        $router->patch('/storage-backends/{id}', StorageApiController::class . '@update')->middleware('api.scope:admin');
+        $router->put('/storage-backends/{id}', StorageApiController::class . '@update')->middleware('api.scope:admin');
+        $router->delete('/storage-backends/{id}', StorageApiController::class . '@destroy')->middleware('api.scope:admin');
+        $router->post('/storage-backends/{id}/test', StorageApiController::class . '@test')->middleware('api.scope:admin');
+        $router->post('/storage-backends/{id}/default', StorageApiController::class . '@makeDefault')->middleware('api.scope:admin');
+        $router->post('/storage-backends/{id}/migrate', StorageApiController::class . '@migrate')->middleware('api.scope:admin');
 
         $router->get('/settings', SystemApiController::class . '@settings')->middleware('api.scope:admin');
         $router->put('/settings', SystemApiController::class . '@settings')->middleware('api.scope:admin');

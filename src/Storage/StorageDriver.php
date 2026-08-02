@@ -5,7 +5,11 @@ namespace App\Storage;
 
 interface StorageDriver
 {
+    /** The backend slug this instance serves — what gets stored in `files`.`disk`. */
     public function name(): string;
+
+    /** The driver type: local, ftp, ftps, sftp or s3. */
+    public function driver(): string;
 
     /** Move an uploaded/temporary file into permanent storage. */
     public function put(string $sourcePath, string $targetPath, bool $moveSource = true): bool;
@@ -14,8 +18,13 @@ interface StorageDriver
 
     public function get(string $path): ?string;
 
-    /** @return resource|null */
-    public function readStream(string $path);
+    /**
+     * Read from $offset onwards. Remote drivers resume server-side instead of
+     * transferring the whole object just to seek past it.
+     *
+     * @return resource|null
+     */
+    public function readStream(string $path, int $offset = 0);
 
     public function exists(string $path): bool;
 
@@ -30,6 +39,6 @@ interface StorageDriver
     /** Absolute filesystem path, or null for remote drivers. */
     public function absolutePath(string $path): ?string;
 
-    /** @return array{total:int, free:int, used:int} */
+    /** @return array{total:int, free:int, used:int} Zeros when the driver cannot report. */
     public function diskUsage(): array;
 }

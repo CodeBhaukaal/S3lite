@@ -80,6 +80,9 @@ final class ApiTest extends TestCase
             'testJobExecution',
             'testBackupCreation',
             'testSettingsUpdate',
+            'testStorageBackendLifecycle',
+            'testUploadRejectsAnUnknownBackend',
+            'testUploadHonoursAnExplicitBackend',
             'testTokenRefreshRotates',
             'testPermanentDelete',
             'testCleanupOfTestUser',
@@ -880,6 +883,100 @@ final class ApiTest extends TestCase
 
         $after = $this->client()->get('/settings', [], $this->auth());
         $this->assertSame('Updated by the test suite', $after->data()['general']['site_tagline'] ?? null);
+    }
+
+    // --- Storage backends ----------------------------------------------------------
+
+    public function testStorageBackendLifecycle(): void
+    {
+        $list = $this->client()->get('/storage-backends', [], $this->auth());
+
+        $this->assertSame(200, $list->lastStatus, $list->lastBody);
+
+        // Which backend is the default is the operator's choice, but it has to
+        // be one of the backends that were actually returned.
+        $payload = (array) $list->data();
+        $slugs = array_column($payload['backends'], 'slug');
+
+        $this->assertNotEmpty($payload['default'] ?? '', 'There must always be a default backend');
+        $this->assertTrue(
+            in_array($payload['default'], $slugs, true),
+            'The default backend "' . $payload['default'] . '" is not in the list'
+        );
+        $this->assertArrayHasKey('sftp', $payload['support']);
+
+        // A deliberately unreachable FTP server: creation must succeed, the
+        // connection test must fail cleanly rather than blow up.
+        $created = $this->client()->postJson('/storage-backends', [
+            'name'     => 'Suite FTP',
+            'driver'   => 'ftp',
+            'host'     => '127.0.0.1',
+            'port'     => 1,
+            'username' => 'suite',
+            'password' => 'suite-secret',
+            'root_path' => 'suite',
+            'timeout'  => 5,
+        ], $this->auth());
+
+        $this->assertSame(201, $created->lastStatus, $created->lastBody);
+
+        $backend = (array) $created->data();
+        $id = (int) $backend['id'];
+
+        $this->assertSame('suite-ftp', $backend['slug']);
+        $this->assertTrue($backend['has_password']);
+        $this->assertNotContains('suite-secret', $created->lastBody, 'Credentials must never be returned');
+
+        $test = $this->client()->postJson('/storage-backends/' . $id . '/test', [], $this->auth());
+        $this->assertSame(502, $test->lastStatus, $test->lastBody);
+        $this->assertFalse($test->data()['ok']);
+
+        $show = $this->client()->get('/storage-backends/' . $id, [], $this->auth());
+        $this->assertSame('error', $show->data()['status']);
+        $this->assertSame(0, $show->data()['usage']['files']);
+
+        // A blank password on update keeps the stored one.
+        $updated = $this->client()->patchJson('/storage-backends/' . $id, [
+            'name'     => 'Suite FTP (renamed)',
+            'host'     => '127.0.0.1',
+            'username' => 'suite',
+            'password' => '',
+        ], $this->auth());
+
+        $this->assertSame(200, $updated->lastStatus, $updated->lastBody);
+        $this->assertSame('Suite FTP (renamed)', $updated->data()['name']);
+        $this->assertTrue($updated->data()['has_password']);
+
+        $deleted = $this->client()->delete('/storage-backends/' . $id, $this->auth());
+        $this->assertSame(200, $deleted->lastStatus, $deleted->lastBody);
+    }
+
+    public function testUploadRejectsAnUnknownBackend(): void
+    {
+        $path = Runner::fixture('routed.txt', 'routed to nowhere');
+
+        $client = $this->client()->upload('/files/upload', 'file', $path, [
+            'storage' => 'definitely-not-a-backend',
+        ], $this->auth());
+
+        $this->assertSame(422, $client->lastStatus, $client->lastBody);
+        $this->assertSame('unknown_storage_backend', $client->errorCode());
+    }
+
+    public function testUploadHonoursAnExplicitBackend(): void
+    {
+        $path = Runner::fixture('routed-local.txt', 'routed to the local disk ' . bin2hex(random_bytes(4)));
+
+        $client = $this->client()->upload('/files/upload', 'file', $path, [
+            'storage' => 'local',
+        ], $this->auth());
+
+        $this->assertSame(201, $client->lastStatus, $client->lastBody);
+
+        $file = $client->data()['uploaded'][0]['file'];
+        $this->assertSame('local', $file['storage']);
+
+        $this->client()->delete('/files/' . $file['uuid'] . '?permanent=1', $this->auth());
     }
 
     // --- Token lifecycle -----------------------------------------------------------

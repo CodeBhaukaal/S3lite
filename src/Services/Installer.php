@@ -402,6 +402,7 @@ final class Installer
 
         // 4. Seed roles, permissions and settings.
         self::seed();
+        StorageBackendService::adoptConfiguredDriver();
 
         // 5. Administrator account.
         $admin = UserService::create([

@@ -329,8 +329,9 @@ Responses always use one envelope:
 Scopes: `files:read`, `files:write`, `folders:*`, `shares:*`, `users:*`,
 `sftp:*`, `metrics:read`, `logs:read`, `jobs:write`, `admin`, `*`.
 
-See [docs/API.md](docs/API.md) for the full endpoint list, and
-[docs/SFTP.md](docs/SFTP.md) for wiring up a real SFTP daemon.
+See [docs/API.md](docs/API.md) for the full endpoint list,
+[docs/STORAGE.md](docs/STORAGE.md) for pointing storage at your own FTP/SFTP/S3
+server, and [docs/SFTP.md](docs/SFTP.md) for wiring up a real SFTP daemon.
 
 ---
 
@@ -420,10 +421,19 @@ No. It is used for caching and rate limiting when available. The bundled client
 is pure PHP, so the `php_redis` extension is not needed either, and if Redis is
 unreachable the platform falls back to a file cache automatically.
 
+**Can I keep the files on my own FTP server instead of this one?**
+Yes. **Admin → Storage → Add backend**, enter the host, credentials and base
+directory, and make it the default — new uploads go straight there. FTP, FTPS
+(explicit TLS), SFTP and S3-compatible buckets are all supported, several at a
+time, and existing files can be migrated across in the background. Every file
+remembers which backend holds it, so switching never breaks old downloads. See
+[docs/STORAGE.md](docs/STORAGE.md).
+
 **Can I use S3 or another object store instead of local disk?**
-Yes. Set `STORAGE_DRIVER=s3` and the `S3_*` variables. The driver signs requests
-with SigV4 over cURL, so it works with AWS S3, MinIO, Backblaze B2, Wasabi and
-other S3-compatible services without an SDK.
+Yes — either add it as a backend from the panel, or set `STORAGE_DRIVER=s3` and
+the `S3_*` variables. The driver signs requests with SigV4 over cURL, so it
+works with AWS S3, MinIO, Backblaze B2, Wasabi and other S3-compatible services
+without an SDK.
 
 **Does it really do SFTP?**
 It owns the accounts, isolated home directories, quotas, SSH keys, permissions

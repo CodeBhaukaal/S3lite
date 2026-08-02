@@ -9,7 +9,7 @@ final class LocalDriver implements StorageDriver
 {
     private string $root;
 
-    public function __construct(string $root)
+    public function __construct(string $root, private string $slug = 'local')
     {
         $this->root = rtrim(str_replace('\\', '/', $root), '/');
 
@@ -19,6 +19,11 @@ final class LocalDriver implements StorageDriver
     }
 
     public function name(): string
+    {
+        return $this->slug;
+    }
+
+    public function driver(): string
     {
         return 'local';
     }
@@ -93,7 +98,7 @@ final class LocalDriver implements StorageDriver
     }
 
     /** @return resource|null */
-    public function readStream(string $path)
+    public function readStream(string $path, int $offset = 0)
     {
         $absolute = $this->resolve($path);
 
@@ -103,7 +108,15 @@ final class LocalDriver implements StorageDriver
 
         $handle = @fopen($absolute, 'rb');
 
-        return $handle === false ? null : $handle;
+        if ($handle === false) {
+            return null;
+        }
+
+        if ($offset > 0) {
+            fseek($handle, $offset);
+        }
+
+        return $handle;
     }
 
     public function exists(string $path): bool

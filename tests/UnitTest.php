@@ -8,7 +8,10 @@ use App\Core\RedisClient;
 use App\Http\Exceptions\ValidationException;
 use App\Http\Validator;
 use App\Models\IpRule;
+use App\Models\StorageBackend;
 use App\Services\MimeGuard;
+use App\Storage\LocalDriver;
+use App\Storage\StorageManager;
 use App\Support\Crypto;
 use App\Support\Jwt;
 use App\Support\SignedUrl;
@@ -487,6 +490,48 @@ final class UnitTest extends TestCase
         return null;
     }
 
+    /** Start the bundled fake FTP listener in its own process. */
+    private function startFakeFtp(int $port, string $root, string $marker): ?string
+    {
+        $command = sprintf(
+            '"%s" "%s" %d "%s" "%s"',
+            str_replace('\\', '/', PHP_BINARY),
+            str_replace('\\', '/', dirname(__DIR__) . '/tests/fake-ftp.php'),
+            $port,
+            $root,
+            $marker
+        );
+
+        $null = PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
+
+        $process = @proc_open(
+            $command,
+            [['pipe', 'r'], ['file', $null, 'w'], ['file', $null, 'w']],
+            $pipes,
+            null,
+            null,
+            ['bypass_shell' => true]
+        );
+
+        if (!is_resource($process)) {
+            return null;
+        }
+
+        self::$processes[] = $process;
+
+        for ($i = 0; $i < 40; $i++) {
+            usleep(100000);
+            $raw = @file_get_contents($marker);
+            $state = $raw === false ? null : json_decode($raw, true);
+
+            if (is_array($state) && ($state['listening'] ?? false) === true) {
+                return $marker;
+            }
+        }
+
+        return null;
+    }
+
     /** @var list<resource> */
     private static array $processes = [];
 
@@ -576,5 +621,218 @@ final class UnitTest extends TestCase
 
         $info = $client->info();
         $this->assertArrayHasKey('redis_version', $info);
+    }
+
+    // --- Storage backends -------------------------------------------------
+
+    public function testRemotePathsCannotEscapeTheRoot(): void
+    {
+        $driver = new class ('probe', 'base/dir') extends \App\Storage\RemoteDriver {
+            public function driver(): string
+            {
+                return 'probe';
+            }
+
+            public function put(string $sourcePath, string $targetPath, bool $moveSource = true): bool
+            {
+                return false;
+            }
+
+            public function readStream(string $path, int $offset = 0)
+            {
+                return null;
+            }
+
+            public function exists(string $path): bool
+            {
+                return false;
+            }
+
+            public function delete(string $path): bool
+            {
+                return false;
+            }
+
+            public function move(string $from, string $to): bool
+            {
+                return false;
+            }
+
+            public function size(string $path): int
+            {
+                return 0;
+            }
+
+            public function expose(string $path): string
+            {
+                return $this->remotePath($path);
+            }
+        };
+
+        $this->assertSame('base/dir/7/ab/cd/file.bin', $driver->expose('7/ab/cd/file.bin'));
+        $this->assertSame('base/dir/7/file.bin', $driver->expose('/7/file.bin'));
+
+        foreach (['../etc/passwd', '7/../../secret', "7/evil\0.bin", ''] as $bad) {
+            $this->assertThrows(\RuntimeException::class, static fn () => $driver->expose($bad), $bad . ' should be rejected');
+        }
+    }
+
+    public function testLocalDriverReadsFromAnOffset(): void
+    {
+        $root = rtrim(str_replace('\\', '/', sys_get_temp_dir()), '/') . '/s3lite-driver-' . Str::random(6);
+        $driver = new LocalDriver($root, 'probe');
+
+        $this->assertSame('probe', $driver->name());
+        $this->assertSame('local', $driver->driver());
+
+        $path = 'offsets/sample.txt';
+        $this->assertTrue($driver->putContents($path, 'HEADERBODY'));
+
+        $stream = $driver->readStream($path, 6);
+        $this->assertNotNull($stream);
+        $this->assertSame('BODY', stream_get_contents($stream));
+        fclose($stream);
+
+        $driver->delete($path);
+        @rmdir($root);
+    }
+
+    public function testBackendPublicArrayHidesCredentials(): void
+    {
+        $secret = StorageBackend::mergeCredentials([], [
+            'password'    => 's3cret',
+            'private_key' => '',
+        ]);
+
+        $this->assertNotNull($secret);
+
+        $row = [
+            'id' => 1, 'uuid' => Str::uuid(), 'name' => 'Box', 'slug' => 'box', 'driver' => 'ftp',
+            'host' => 'ftp.example.com', 'port' => 21, 'username' => 'user', 'secret' => $secret,
+            'root_path' => 'files', 'options' => ['passive' => true], 'is_default' => 0, 'is_active' => 1,
+            'status' => 'unknown', 'last_error' => null, 'last_checked_at' => null, 'created_at' => null,
+        ];
+
+        $public = StorageBackend::publicArray($row);
+
+        $this->assertTrue($public['has_password']);
+        $this->assertFalse($public['has_private_key']);
+        $this->assertFalse(in_array('secret', array_keys($public), true), 'The encrypted blob must not be exposed');
+        $this->assertNotContains('s3cret', (string) json_encode($public));
+        $this->assertSame('ftp.example.com:21/files', StorageBackend::endpointLabel($row));
+
+        // A blank value keeps the stored credential; null clears it.
+        $kept = StorageBackend::credentials(['secret' => StorageBackend::mergeCredentials($row, ['password' => ''])]);
+        $this->assertSame('s3cret', $kept['password'] ?? null);
+
+        $cleared = StorageBackend::mergeCredentials($row, ['password' => null]);
+        $this->assertNull($cleared);
+    }
+
+    /**
+     * Drive the real FtpDriver against the bundled fake server: connect,
+     * create the sharded directories, transfer, resume, rename and clean up.
+     */
+    public function testFtpDriverRoundTrip(): void
+    {
+        if (!extension_loaded('ftp')) {
+            $this->skip('The ftp extension is not loaded');
+        }
+
+        $port = random_int(24000, 24800);
+        $root = rtrim(str_replace('\\', '/', sys_get_temp_dir()), '/') . '/fake-ftp-' . Str::random(6);
+        $marker = $root . '.json';
+
+        if ($this->startFakeFtp($port, $root, $marker) === null) {
+            $this->skip('Could not start the fake FTP server');
+        }
+
+        $driver = new \App\Storage\FtpDriver(
+            'suite-ftp',
+            '127.0.0.1',
+            $port,
+            'tester',
+            'secret',
+            false,
+            'base',
+            ['timeout' => 5]
+        );
+
+        $this->assertSame('suite-ftp', $driver->name());
+        $this->assertSame('ftp', $driver->driver());
+
+        $path = '9/ab/cd/object.bin';
+        $body = 'HEADER' . str_repeat('payload', 64);
+
+        // Writing creates base/9/ab/cd on the way, as an upload would.
+        $this->assertTrue($driver->putContents($path, $body));
+        $this->assertTrue(is_file($root . '/base/' . $path), 'The file should land under the configured root');
+
+        $this->assertTrue($driver->exists($path));
+        $this->assertSame(strlen($body), $driver->size($path));
+        $this->assertSame($body, $driver->get($path));
+
+        // Range reads must resume server-side, not fetch and discard.
+        $stream = $driver->readStream($path, 6);
+        $this->assertNotNull($stream);
+        $this->assertSame(substr($body, 6), stream_get_contents($stream));
+        fclose($stream);
+
+        $copy = '9/ab/cd/copy.bin';
+        $this->assertTrue($driver->copy($path, $copy));
+        $this->assertSame($body, $driver->get($copy));
+
+        $moved = '9/ef/gh/moved.bin';
+        $this->assertTrue($driver->move($copy, $moved));
+        $this->assertFalse($driver->exists($copy));
+        $this->assertSame($body, $driver->get($moved));
+
+        $this->assertTrue($driver->delete($moved));
+        $this->assertFalse($driver->exists($moved));
+
+        // Deleting the last file in a branch prunes the empty directories,
+        // but never climbs past the configured root.
+        $this->assertTrue($driver->delete($path));
+        $this->assertFalse(is_dir($root . '/base/9/ab'), 'Empty directories should be pruned');
+        $this->assertTrue(is_dir($root . '/base'), 'The root itself must survive');
+
+        // Deleting something that is already gone is not an error.
+        $this->assertTrue($driver->delete($path));
+
+        $driver->close();
+        @unlink($marker);
+    }
+
+    public function testFtpDriverRejectsBadCredentials(): void
+    {
+        if (!extension_loaded('ftp')) {
+            $this->skip('The ftp extension is not loaded');
+        }
+
+        $port = random_int(24801, 25400);
+        $root = rtrim(str_replace('\\', '/', sys_get_temp_dir()), '/') . '/fake-ftp-' . Str::random(6);
+        $marker = $root . '.json';
+
+        if ($this->startFakeFtp($port, $root, $marker) === null) {
+            $this->skip('Could not start the fake FTP server');
+        }
+
+        $driver = new \App\Storage\FtpDriver('bad-ftp', '127.0.0.1', $port, 'tester', 'wrong', false, '', ['timeout' => 5]);
+
+        $error = $this->assertThrows(\RuntimeException::class, static fn () => $driver->exists('anything'));
+        $this->assertContains('rejected', $error->getMessage());
+
+        @unlink($marker);
+    }
+
+    public function testUnknownBackendSlugFailsLoudly(): void
+    {
+        $this->assertThrows(
+            \App\Http\Exceptions\HttpException::class,
+            static fn () => StorageManager::disk('no-such-backend-' . Str::random(6))
+        );
+
+        // Slugs defined only in config/storage.php still resolve.
+        $this->assertSame('local', StorageManager::disk('local')->driver());
     }
 }

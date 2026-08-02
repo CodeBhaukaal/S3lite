@@ -23,6 +23,7 @@ final class JobService
         'metrics.sample'   => 'Record a system metrics sample',
         'integrity.check'  => 'Verify stored files against the index',
         'orphans.prune'    => 'Delete stored blobs with no database row',
+        'storage.migrate'  => 'Move stored files from one storage backend to another',
         'webhook.deliver'  => 'Deliver a webhook payload',
         'audit.purge'      => 'Delete audit entries past the retention window',
     ];
@@ -54,6 +55,7 @@ final class JobService
                 'metrics.sample'  => self::sampleMetrics(),
                 'integrity.check' => self::integrity(),
                 'orphans.prune'   => 'Removed ' . BackupService::pruneOrphans() . ' orphaned blobs',
+                'storage.migrate' => self::migrateStorage($payload),
                 'webhook.deliver' => self::webhook($payload),
                 'audit.purge'     => 'Deleted ' . AuditService::purge((int) ($payload['days'] ?? 180)) . ' audit entries',
                 default           => throw new \RuntimeException("Unknown job type: {$type}"),
@@ -179,6 +181,28 @@ final class JobService
             'missing' => count($result['missing']),
             'orphans' => $result['orphans'],
         ], JSON_UNESCAPED_SLASHES) ?: '';
+    }
+
+    /**
+     * Move a batch of files between backends, then queue the next batch if
+     * there is more to do and the last one made progress.
+     */
+    private static function migrateStorage(array $payload): string
+    {
+        $from = (string) ($payload['from'] ?? '');
+        $to = (string) ($payload['to'] ?? '');
+
+        if ($from === '' || $to === '') {
+            throw new \RuntimeException('A storage migration needs both a "from" and a "to" backend.');
+        }
+
+        $result = StorageBackendService::migrate($from, $to, (int) ($payload['limit'] ?? 200));
+
+        if ($result['remaining'] > 0 && $result['moved'] > 0) {
+            self::dispatch('storage.migrate', $payload, 5);
+        }
+
+        return json_encode($result, JSON_UNESCAPED_SLASHES) ?: '';
     }
 
     private static function webhook(array $payload): string

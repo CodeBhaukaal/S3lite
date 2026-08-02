@@ -26,6 +26,7 @@ use App\Services\MetricsService;
 use App\Services\SettingService;
 use App\Services\SftpService;
 use App\Services\StatsService;
+use App\Services\StorageBackendService;
 use App\Services\UserService;
 
 final class AdminController extends Controller
@@ -565,6 +566,118 @@ final class AdminController extends Controller
         BackupService::delete($name);
 
         return $this->back($request, 'success', 'Backup deleted.');
+    }
+
+    // --- Storage backends -------------------------------------------------
+
+    public function storage(Request $request): Response
+    {
+        $backends = array_map(
+            [\App\Models\StorageBackend::class, 'publicArray'],
+            StorageBackendService::list()
+        );
+
+        return $this->view('admin.storage', [
+            'backends'    => $backends,
+            'usage'       => StorageBackendService::usageBySlug(),
+            'drivers'     => \App\Models\StorageBackend::DRIVERS,
+            'defaultSlug' => \App\Storage\StorageManager::defaultSlug(),
+            'capabilities' => [
+                'ftp'  => extension_loaded('ftp'),
+                'sftp' => \App\Storage\SftpDriver::isSupported(),
+            ],
+        ]);
+    }
+
+    public function storeBackend(Request $request): Response
+    {
+        $backend = StorageBackendService::create($this->backendInput($request));
+
+        // Tell the admin straight away whether the credentials actually work.
+        $test = StorageBackendService::test($backend);
+
+        return $this->back(
+            $request,
+            $test['ok'] ? 'success' : 'warning',
+            $test['ok']
+                ? 'Backend added and connected.'
+                : 'Backend saved, but the connection test failed: ' . $test['message']
+        );
+    }
+
+    public function updateBackend(Request $request, string $id): Response
+    {
+        StorageBackendService::update((int) $id, $this->backendInput($request));
+
+        return $this->back($request, 'success', 'Backend updated.');
+    }
+
+    public function testBackend(Request $request, string $id): Response
+    {
+        $result = StorageBackendService::test((int) $id);
+
+        if ($request->wantsJson()) {
+            return $this->json($result, $result['ok'] ? 200 : 502);
+        }
+
+        return $this->back($request, $result['ok'] ? 'success' : 'error', $result['message']);
+    }
+
+    public function defaultBackend(Request $request, string $id): Response
+    {
+        $backend = StorageBackendService::makeDefault((int) $id);
+
+        return $this->back($request, 'success', $backend['name'] . ' now receives new uploads.');
+    }
+
+    public function deleteBackend(Request $request, string $id): Response
+    {
+        StorageBackendService::delete((int) $id);
+
+        return $this->back($request, 'success', 'Backend deleted.');
+    }
+
+    public function migrateBackend(Request $request, string $id): Response
+    {
+        $backend = \App\Models\StorageBackend::find((int) $id);
+
+        if ($backend === null) {
+            return $this->back($request, 'error', 'Backend not found.');
+        }
+
+        $target = $request->string('to');
+
+        if ($target === '') {
+            return $this->back($request, 'error', 'Choose a destination backend.');
+        }
+
+        // Large migrations belong in the queue; the panel only kicks it off.
+        JobService::dispatch('storage.migrate', [
+            'from'  => (string) $backend['slug'],
+            'to'    => $target,
+            'limit' => max(1, min(1000, $request->int('limit', 200))),
+        ]);
+
+        return $this->back($request, 'success', sprintf(
+            'Queued a migration from %s to %s. Run the queue (or wait for cron) to move the files.',
+            $backend['slug'],
+            $target
+        ));
+    }
+
+    /** Shape a posted backend form into service input. */
+    private function backendInput(Request $request): array
+    {
+        $input = $request->all();
+        unset($input['_token'], $input['_method']);
+
+        // Every checkbox in the form is paired with a hidden "0", so an
+        // unchecked box still posts a value.
+        foreach (['is_active', 'is_default', 'passive', 'use_pasv_address'] as $flag) {
+            $input[$flag] = $request->bool($flag) ? '1' : '0';
+        }
+
+        return $input;
     }
 
     // --- SFTP administration --------------------------------------------

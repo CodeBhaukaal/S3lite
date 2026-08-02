@@ -93,14 +93,12 @@ final class DownloadService
         $path = (string) $file['storage_path'];
 
         $response = Response::stream(static function () use ($disk, $path, $start, $length): void {
-            $stream = $disk->readStream($path);
+            // Remote backends resume server-side rather than shipping the
+            // leading bytes just so we can skip them.
+            $stream = $disk->readStream($path, $start);
 
             if ($stream === null) {
                 return;
-            }
-
-            if ($start > 0) {
-                fseek($stream, $start);
             }
 
             $remaining = $length;
