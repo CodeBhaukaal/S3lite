@@ -120,7 +120,7 @@ by a non-admin still cannot list other users.
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/files` | `q`, `folder_id`, `mime`, `extension`, `tag`, `trashed`, `shared`, `min_size`, `max_size`, `from`, `to`, `sort`, `direction`, `page`, `per_page` |
-| POST | `/files/upload` | multipart `file` or `files[]`; or a raw body with `X-File-Name` |
+| POST | `/files/upload` | multipart `file` or `files[]`; or a raw body with `X-File-Name`. Optional `storage` (or `X-Storage-Backend`) picks a storage backend |
 | GET | `/files/tags` | Tags in use, with counts |
 | GET | `/files/{id}` | Metadata, versions, shares |
 | PATCH | `/files/{id}` | `name`, `folder_id`, `tags` |
@@ -140,7 +140,7 @@ by a non-admin still cannot list other users.
 ### Resumable uploads
 
 ```
-POST   /files/multipart/init            {"filename","total_size","part_size?","folder_id?","mime?"}
+POST   /files/multipart/init            {"filename","total_size","part_size?","folder_id?","mime?","storage?"}
 POST   /files/multipart/{uploadId}/part multipart "part" + part_number (or raw body + X-Part-Number)
 GET    /files/multipart/{uploadId}      → {"received_parts":[…],"missing_parts":[…],"progress":42.5}
 POST   /files/multipart/{uploadId}/complete {"checksum?","tags?"}
@@ -216,6 +216,24 @@ Events: `file.uploaded`, `file.downloaded`, `file.deleted`, `file.restored`,
 `user.login_failed`, `sftp.upload`, `sftp.download`.
 
 A hook that fails 20 times in a row is disabled automatically.
+
+### Storage backends
+Where files are kept: the local disk, an FTP/FTPS/SFTP server or an S3 bucket.
+All of these need the `admin` scope, and credentials are write-only — responses
+only report whether one is set.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/storage-backends` | Backends, per-backend usage, the current default and this server's protocol support |
+| POST | `/storage-backends` | `name`, `driver` (`local`/`ftp`/`ftps`/`sftp`/`s3`), `host`, `port`, `username`, `password`, `private_key`, `passphrase`, `root_path`, `timeout`, `is_default` |
+| GET | `/storage-backends/{id}` | Accepts an id, uuid or slug |
+| PATCH | `/storage-backends/{id}` | Blank credential fields keep the stored value |
+| DELETE | `/storage-backends/{id}` | Refused while files still point at it |
+| POST | `/storage-backends/{id}/test` | Write/read/delete a probe object; `502` when it fails |
+| POST | `/storage-backends/{id}/default` | Send new uploads here |
+| POST | `/storage-backends/{id}/migrate` | `to`, `limit`, `queue`. Moves files across, verifying each one |
+
+Full guide: [STORAGE.md](STORAGE.md).
 
 ### System
 `GET /health` and `GET /ping` are public. `GET /metrics`,

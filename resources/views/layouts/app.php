@@ -82,6 +82,9 @@ $quotaClass = $quota['percent'] >= 90 ? 'is-danger' : ($quota['percent'] >= 75 ?
                     <a class="nav-item <?= active_class('/admin/files') ?>" href="<?= e(url('/admin/files')) ?>">
                         <?= icon('files') ?><span>All files</span>
                     </a>
+                    <a class="nav-item <?= active_class('/admin/storage') ?>" href="<?= e(url('/admin/storage')) ?>">
+                        <?= icon('hard-drive') ?><span>Storage</span>
+                    </a>
                     <a class="nav-item <?= active_class('/admin/sftp') ?>" href="<?= e(url('/admin/sftp')) ?>">
                         <?= icon('server') ?><span>FTP / SFTP</span>
                     </a>

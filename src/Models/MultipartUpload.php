@@ -61,6 +61,7 @@ final class MultipartUpload extends Model
             'received_bytes' => (int) $upload['received_bytes'],
             'missing_parts'  => array_values(array_diff(range(1, max(1, (int) $upload['total_parts'])), $received)),
             'status'         => $upload['status'],
+            'storage'        => $upload['disk'] ?? null,
             'progress'       => (int) $upload['total_parts'] > 0
                 ? round(count($received) / (int) $upload['total_parts'] * 100, 2)
                 : 0.0,

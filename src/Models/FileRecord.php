@@ -208,6 +208,7 @@ final class FileRecord extends Model
             'tags'           => $file['tags'] ?: [],
             'meta'           => $file['meta'] ?: [],
             'source'         => $file['source'],
+            'storage'        => $file['disk'] ?? null,
             'previewable'    => self::isPreviewable($file),
             'download_url'   => $downloadUrl,
             'trashed'        => $file['deleted_at'] !== null,

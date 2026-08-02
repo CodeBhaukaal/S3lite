@@ -58,6 +58,7 @@ final class DocsController extends Controller
                 ['name' => 'Users', 'description' => 'Account administration'],
                 ['name' => 'API keys', 'description' => 'Scoped machine credentials'],
                 ['name' => 'SFTP', 'description' => 'FTP/FTPS/SFTP accounts, keys and sessions'],
+                ['name' => 'Storage', 'description' => 'Where files are kept: local disk, FTP/FTPS/SFTP servers, S3 buckets'],
                 ['name' => 'Webhooks', 'description' => 'Event subscriptions'],
                 ['name' => 'System', 'description' => 'Health, metrics, logs, jobs and backups'],
             ],
@@ -323,6 +324,19 @@ final class DocsController extends Controller
                 'get' => ['tags' => ['SFTP'], 'summary' => 'Read FTP/FTPS/SFTP service state', 'responses' => $ok()],
                 'put' => ['tags' => ['SFTP'], 'summary' => 'Enable/disable services, passive ports and TLS', 'responses' => $ok()],
             ],
+
+            '/storage-backends' => [
+                'get'  => ['tags' => ['Storage'], 'summary' => 'List storage backends and their usage (admin)', 'responses' => $ok()],
+                'post' => ['tags' => ['Storage'], 'summary' => 'Add a local, FTP, FTPS, SFTP or S3 backend (admin)', 'responses' => $ok('', 'Created')],
+            ],
+            '/storage-backends/{id}' => [
+                'get'    => ['tags' => ['Storage'], 'summary' => 'Read a backend', 'parameters' => [$pathParam('id', 'Backend id, UUID or slug')], 'responses' => $ok()],
+                'patch'  => ['tags' => ['Storage'], 'summary' => 'Update a backend; blank credentials are kept', 'parameters' => [$pathParam('id', 'Backend id, UUID or slug')], 'responses' => $ok()],
+                'delete' => ['tags' => ['Storage'], 'summary' => 'Delete a backend that holds no files', 'parameters' => [$pathParam('id', 'Backend id, UUID or slug')], 'responses' => $ok()],
+            ],
+            '/storage-backends/{id}/test' => ['post' => ['tags' => ['Storage'], 'summary' => 'Probe the connection', 'parameters' => [$pathParam('id', 'Backend id, UUID or slug')], 'responses' => $ok()]],
+            '/storage-backends/{id}/default' => ['post' => ['tags' => ['Storage'], 'summary' => 'Send new uploads to this backend', 'parameters' => [$pathParam('id', 'Backend id, UUID or slug')], 'responses' => $ok()]],
+            '/storage-backends/{id}/migrate' => ['post' => ['tags' => ['Storage'], 'summary' => 'Move stored files to another backend', 'parameters' => [$pathParam('id', 'Backend id, UUID or slug')], 'responses' => $ok()]],
 
             '/webhooks' => [
                 'get'  => ['tags' => ['Webhooks'], 'summary' => 'List webhooks', 'responses' => $ok()],

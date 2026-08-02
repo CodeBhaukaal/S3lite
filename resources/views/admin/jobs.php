@@ -15,6 +15,7 @@ $jobIcons = [
     'sftp.sync' => 'server', 'metrics.sample' => 'activity',
     'integrity.check' => 'shield-check', 'orphans.prune' => 'package',
     'webhook.deliver' => 'webhook', 'audit.purge' => 'file-text',
+    'storage.migrate' => 'hard-drive',
 ];
 
 View::startSection('content');
@@ -48,7 +49,8 @@ View::startSection('content');
     <div class="card__body">
         <div class="grid grid-2">
             <?php foreach ($types as $type => $description): ?>
-                <?php if ($type === 'webhook.deliver') { continue; } ?>
+                <?php // These two need a payload, so they are triggered from their own pages. ?>
+                <?php if ($type === 'webhook.deliver' || $type === 'storage.migrate') { continue; } ?>
                 <div class="flex items-start gap-3" style="padding:10px; border:1px solid var(--border); border-radius: var(--radius)">
                     <span class="stat__icon" style="margin:0; width:32px; height:32px"><?= icon($jobIcons[$type] ?? 'zap', 'icon icon-sm') ?></span>
                     <div class="flex-1">

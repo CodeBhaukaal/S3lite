@@ -190,6 +190,14 @@ final class Kernel
             $this->success($result['migration'] . ' (' . $result['statements'] . ' statements)');
         }
 
+        // Keep a .env-configured driver as the default instead of silently
+        // handing new uploads to the seeded local disk.
+        $adopted = \App\Services\StorageBackendService::adoptConfiguredDriver();
+
+        if ($adopted !== null) {
+            $this->info('Adopted the ' . $adopted['driver'] . ' driver from .env as the default storage backend.');
+        }
+
         return 0;
     }
 

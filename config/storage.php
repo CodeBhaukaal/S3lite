@@ -24,6 +24,13 @@ return [
         ],
     ],
 
+    // Defaults for FTP/FTPS/SFTP backends added from the admin panel. Each
+    // backend can override these in its own options.
+    'remote' => [
+        'timeout' => (int) Env::get('STORAGE_REMOTE_TIMEOUT', 30),
+        'passive' => true,
+    ],
+
     'tmp_path'      => dirname(__DIR__) . '/storage/tmp',
     'chunk_path'    => dirname(__DIR__) . '/storage/chunks',
     'backup_path'   => dirname(__DIR__) . '/storage/backups',

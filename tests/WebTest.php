@@ -259,6 +259,7 @@ final class WebTest extends TestCase
             '/admin/users'      => 'Users',
             '/admin/roles'      => 'Roles &amp; permissions',
             '/admin/files'      => 'All files',
+            '/admin/storage'    => 'Storage backends',
             '/admin/sftp'       => 'FTP / FTPS / SFTP',
             '/admin/monitoring' => 'Monitoring',
             '/admin/jobs'       => 'Jobs &amp; backups',

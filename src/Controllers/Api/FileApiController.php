@@ -100,6 +100,7 @@ final class FileApiController extends Controller
 
         $folderId = $this->folderIdFrom($request, $userId);
         $tags = $this->tagsFrom($request);
+        $disk = $this->diskFrom($request);
 
         $stored = [];
         $errors = [];
@@ -115,7 +116,7 @@ final class FileApiController extends Controller
                     'path' => $file['tmp_name'],
                     'name' => $file['name'],
                     'size' => (int) $file['size'],
-                ], ['folder_id' => $folderId, 'tags' => $tags, 'source' => 'api']);
+                ], ['folder_id' => $folderId, 'tags' => $tags, 'source' => 'api', 'disk' => $disk]);
 
                 $stored[] = [
                     'file'      => FileRecord::publicArray($result['file'], $this->downloadUrl($result['file'])),
@@ -162,6 +163,7 @@ final class FileApiController extends Controller
         ], [
             'folder_id' => $this->folderIdFrom($request, $this->userId()),
             'source'    => 'api',
+            'disk'      => $this->diskFrom($request),
         ]);
 
         return $this->json([
@@ -255,6 +257,7 @@ final class FileApiController extends Controller
         }
 
         $synthetic = array_merge($file, [
+            'disk'         => $record['disk'] ?: $file['disk'],
             'storage_path' => $record['storage_path'],
             'size'         => $record['size'],
             'checksum'     => $record['checksum'],
@@ -318,7 +321,8 @@ final class FileApiController extends Controller
             $request->int('total_size'),
             $this->folderIdFrom($request, $this->userId()),
             $request->string('mime') ?: null,
-            $request->has('part_size') ? $request->int('part_size') : null
+            $request->has('part_size') ? $request->int('part_size') : null,
+            $this->diskFrom($request)
         ), 201);
     }
 
@@ -420,6 +424,27 @@ final class FileApiController extends Controller
         }
 
         return (int) $folder['id'];
+    }
+
+    /**
+     * Optional per-upload destination: a `storage` field or an
+     * X-Storage-Backend header. Blank means "use the default backend".
+     */
+    private function diskFrom(Request $request): ?string
+    {
+        $slug = $request->string('storage', $request->string('disk'));
+
+        if ($slug === '') {
+            $slug = (string) $request->header('X-Storage-Backend', '');
+        }
+
+        if ($slug === '') {
+            return null;
+        }
+
+        // Resolve up front: a bad slug is a problem with the request, not with
+        // any one of the files it carries.
+        return \App\Services\StorageBackendService::resolveForUpload($slug);
     }
 
     /** @return list<string> */

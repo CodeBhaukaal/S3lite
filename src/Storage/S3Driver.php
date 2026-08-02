@@ -17,7 +17,8 @@ final class S3Driver implements StorageDriver
         private string $region,
         private string $bucket,
         private string $accessKey,
-        private string $secretKey
+        private string $secretKey,
+        private string $slug = 's3'
     ) {
         if ($this->endpoint === '' || $this->bucket === '' || $this->accessKey === '') {
             throw new RuntimeException('S3 driver is not configured.');
@@ -27,6 +28,11 @@ final class S3Driver implements StorageDriver
     }
 
     public function name(): string
+    {
+        return $this->slug;
+    }
+
+    public function driver(): string
     {
         return 's3';
     }
@@ -63,9 +69,13 @@ final class S3Driver implements StorageDriver
     }
 
     /** @return resource|null */
-    public function readStream(string $path)
+    public function readStream(string $path, int $offset = 0)
     {
-        $contents = $this->get($path);
+        // Let S3 do the seeking instead of pulling bytes we would discard.
+        $extraHeaders = $offset > 0 ? ['Range: bytes=' . $offset . '-'] : [];
+        [$status, $body] = $this->request('GET', $path, '', $extraHeaders);
+
+        $contents = $status === 200 || $status === 206 ? $body : null;
 
         if ($contents === null) {
             return null;
@@ -126,9 +136,10 @@ final class S3Driver implements StorageDriver
     }
 
     /**
+     * @param list<string> $extraHeaders
      * @return array{0:int, 1:string, 2:array<string,string>}
      */
-    private function request(string $method, string $key, string $body = ''): array
+    private function request(string $method, string $key, string $body = '', array $extraHeaders = []): array
     {
         $key = ltrim($key, '/');
         $url = sprintf('%s/%s/%s', $this->endpoint, $this->bucket, $key);
@@ -179,12 +190,13 @@ final class S3Driver implements StorageDriver
             CURLOPT_HEADER         => true,
             CURLOPT_NOBODY         => $method === 'HEAD',
             CURLOPT_TIMEOUT        => 60,
-            CURLOPT_HTTPHEADER     => [
+            // Range is not part of the signed header set, so it can ride along.
+            CURLOPT_HTTPHEADER     => array_merge([
                 'Host: ' . $host,
                 'x-amz-date: ' . $amzDate,
                 'x-amz-content-sha256: ' . $payloadHash,
                 'Authorization: ' . $authorization,
-            ],
+            ], $extraHeaders),
         ]);
 
         if ($body !== '') {

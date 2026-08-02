@@ -191,27 +191,43 @@ final class BackupService
      */
     public static function verifyIntegrity(int $limit = 5000): array
     {
-        $disk = \App\Storage\StorageManager::disk();
         $rows = Database::select(
-            'SELECT id, name, storage_path, size, checksum FROM files ORDER BY id DESC LIMIT ' . max(1, $limit)
+            'SELECT id, name, disk, storage_path, size, checksum FROM files ORDER BY id DESC LIMIT ' . max(1, $limit)
         );
 
         $missing = [];
 
         foreach ($rows as $row) {
-            if (!$disk->exists((string) $row['storage_path'])) {
+            try {
+                $disk = \App\Storage\StorageManager::disk((string) $row['disk']);
+                $present = $disk->exists((string) $row['storage_path']);
+            } catch (\Throwable $e) {
+                // An unreachable backend is not proof the file is gone.
+                Logger::error('Integrity check skipped a backend: ' . $e->getMessage(), ['disk' => $row['disk']]);
+                continue;
+            }
+
+            if (!$present) {
                 $missing[] = [
                     'id'   => (int) $row['id'],
                     'name' => (string) $row['name'],
                     'path' => (string) $row['storage_path'],
+                    'disk' => (string) $row['disk'],
                 ];
             }
         }
 
         $orphans = 0;
-        if ($disk instanceof \App\Storage\LocalDriver) {
-            $known = array_flip(array_column(Database::select('SELECT storage_path FROM files'), 'storage_path'));
-            $versionPaths = array_flip(array_column(Database::select('SELECT storage_path FROM file_versions'), 'storage_path'));
+        foreach (self::localDisks() as $disk) {
+            $slug = $disk->name();
+            $known = array_flip(array_column(
+                Database::select('SELECT storage_path FROM files WHERE disk = ?', [$slug]),
+                'storage_path'
+            ));
+            $versionPaths = array_flip(array_column(
+                Database::select('SELECT storage_path FROM file_versions WHERE disk = ?', [$slug]),
+                'storage_path'
+            ));
             $root = str_replace('\\', '/', $disk->root());
 
             $iterator = new \RecursiveIteratorIterator(
@@ -241,41 +257,74 @@ final class BackupService
     /** Delete stored blobs that no database row references. */
     public static function pruneOrphans(): int
     {
-        $disk = \App\Storage\StorageManager::disk();
-
-        if (!$disk instanceof \App\Storage\LocalDriver) {
-            return 0;
-        }
-
-        $known = array_flip(array_column(Database::select('SELECT storage_path FROM files'), 'storage_path'));
-        $versions = array_flip(array_column(Database::select('SELECT storage_path FROM file_versions'), 'storage_path'));
-        $root = str_replace('\\', '/', $disk->root());
-
         $removed = 0;
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS),
-            \RecursiveIteratorIterator::LEAVES_ONLY
-        );
 
-        foreach ($iterator as $file) {
-            if (!$file instanceof \SplFileInfo || !$file->isFile() || str_starts_with($file->getFilename(), '.')) {
-                continue;
-            }
+        // Only local backends can be walked; remote listings are neither
+        // portable nor cheap enough to sweep on a schedule.
+        foreach (self::localDisks() as $disk) {
+            $slug = $disk->name();
+            $known = array_flip(array_column(
+                Database::select('SELECT storage_path FROM files WHERE disk = ?', [$slug]),
+                'storage_path'
+            ));
+            $versions = array_flip(array_column(
+                Database::select('SELECT storage_path FROM file_versions WHERE disk = ?', [$slug]),
+                'storage_path'
+            ));
+            $root = str_replace('\\', '/', $disk->root());
 
-            $relative = ltrim(substr(str_replace('\\', '/', $file->getPathname()), strlen($root)), '/');
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS),
+                \RecursiveIteratorIterator::LEAVES_ONLY
+            );
 
-            // Files created in the last hour may belong to an in-flight upload.
-            if (isset($known[$relative]) || isset($versions[$relative]) || $file->getMTime() > time() - 3600) {
-                continue;
-            }
+            foreach ($iterator as $file) {
+                if (!$file instanceof \SplFileInfo || !$file->isFile() || str_starts_with($file->getFilename(), '.')) {
+                    continue;
+                }
 
-            if (@unlink($file->getPathname())) {
-                $removed++;
+                $relative = ltrim(substr(str_replace('\\', '/', $file->getPathname()), strlen($root)), '/');
+
+                // Files created in the last hour may belong to an in-flight upload.
+                if (isset($known[$relative]) || isset($versions[$relative]) || $file->getMTime() > time() - 3600) {
+                    continue;
+                }
+
+                if (@unlink($file->getPathname())) {
+                    $removed++;
+                }
             }
         }
 
         AuditService::system('storage.prune_orphans', "Removed {$removed} orphaned blobs");
 
         return $removed;
+    }
+
+    /**
+     * Every configured backend whose bytes live on this machine.
+     *
+     * @return list<\App\Storage\LocalDriver>
+     */
+    private static function localDisks(): array
+    {
+        $slugs = array_column(Database::select('SELECT DISTINCT disk FROM files'), 'disk');
+        $slugs[] = \App\Storage\StorageManager::defaultSlug();
+
+        $disks = [];
+
+        foreach (array_unique($slugs) as $slug) {
+            try {
+                $disk = \App\Storage\StorageManager::disk((string) $slug);
+            } catch (\Throwable) {
+                continue;
+            }
+
+            if ($disk instanceof \App\Storage\LocalDriver && !isset($disks[$disk->root()])) {
+                $disks[$disk->root()] = $disk;
+            }
+        }
+
+        return array_values($disks);
     }
 }

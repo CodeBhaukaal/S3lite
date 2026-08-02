@@ -15,7 +15,7 @@ use App\Support\Str;
  */
 final class MultipartService
 {
-    public static function init(int $userId, string $filename, int $totalSize, ?int $folderId = null, ?string $mime = null, ?int $partSize = null): array
+    public static function init(int $userId, string $filename, int $totalSize, ?int $folderId = null, ?string $mime = null, ?int $partSize = null, ?string $disk = null): array
     {
         $filename = Str::sanitizeFilename($filename);
 
@@ -48,12 +48,17 @@ final class MultipartService
 
         $totalParts = (int) max(1, ceil($totalSize / $partSize));
 
+        // Resolve the destination now so an unknown backend fails before the
+        // client spends an hour uploading parts.
+        $disk = StorageBackendService::resolveForUpload($disk);
+
         $uuid = Str::uuid();
 
         $id = MultipartUpload::create([
             'uuid'        => $uuid,
             'user_id'     => $userId,
             'folder_id'   => $folderId,
+            'disk'        => $disk,
             'filename'    => $filename,
             'mime'        => $mime ?: 'application/octet-stream',
             'total_size'  => $totalSize,
@@ -187,6 +192,7 @@ final class MultipartService
                 'folder_id' => $upload['folder_id'] === null ? null : (int) $upload['folder_id'],
                 'tags'      => (array) ($options['tags'] ?? []),
                 'source'    => 'api',
+                'disk'      => $upload['disk'] ?: null,
             ]);
         } catch (\Throwable $e) {
             @unlink($assembled);

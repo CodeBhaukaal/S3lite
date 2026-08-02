@@ -161,6 +161,14 @@ $router->group(['prefix' => '/admin', 'middleware' => ['installed', 'auth', 'adm
     $router->get('/backups/{name}/download', AdminController::class . '@downloadBackup');
     $router->post('/backups/{name}/delete', AdminController::class . '@deleteBackup')->middleware('csrf');
 
+    $router->get('/storage', AdminController::class . '@storage');
+    $router->post('/storage', AdminController::class . '@storeBackend')->middleware('csrf');
+    $router->post('/storage/{id}/update', AdminController::class . '@updateBackend')->middleware('csrf');
+    $router->post('/storage/{id}/test', AdminController::class . '@testBackend')->middleware('csrf', 'throttle:20,60');
+    $router->post('/storage/{id}/default', AdminController::class . '@defaultBackend')->middleware('csrf');
+    $router->post('/storage/{id}/migrate', AdminController::class . '@migrateBackend')->middleware('csrf');
+    $router->post('/storage/{id}/delete', AdminController::class . '@deleteBackend')->middleware('csrf');
+
     $router->get('/sftp', AdminController::class . '@sftp');
     $router->post('/sftp', AdminController::class . '@storeSftp')->middleware('csrf');
     $router->post('/sftp/sync-all', AdminController::class . '@syncAllSftp')->middleware('csrf');
