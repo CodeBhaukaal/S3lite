@@ -26,11 +26,18 @@ View::startSection('content');
     <div class="page-head__text">
         <h1><?= icon('hard-drive', 'icon icon-lg') ?> Storage backends</h1>
         <div class="page-head__sub">
-            Keep files on this server or push them to your own FTP, FTPS, SFTP or S3 storage.
+            Keep files on this server or push them to your own FTP, FTPS, SFTP, S3 or Google Drive storage.
             New uploads go to whichever backend is marked as the default.
         </div>
     </div>
     <div class="page-head__actions">
+        <?php /** @var array{configured:bool, from_env:bool, client_id:string, redirect_uri:string} $google */ ?>
+        <?php if ($google['configured']): ?>
+            <a class="btn" href="<?= e(url('/admin/storage/google/start')) ?>"><?= icon('cloud') ?> Connect Google Drive</a>
+            <button class="btn btn-ghost btn-icon" type="button" data-modal-open="modal-google-setup" title="Google sign-in settings"><?= icon('settings') ?></button>
+        <?php else: ?>
+            <button class="btn" type="button" data-modal-open="modal-google-setup"><?= icon('cloud') ?> Connect Google Drive</button>
+        <?php endif; ?>
         <button class="btn btn-primary" type="button" data-modal-open="modal-storage-new"><?= icon('plus') ?> Add backend</button>
     </div>
 </div>
@@ -140,6 +147,8 @@ View::startSection('content');
                             </span>
                             <?php if ($backend['username'] !== null && $backend['username'] !== ''): ?>
                                 <div class="faint small">as <?= e($backend['username']) ?></div>
+                            <?php elseif (($backend['options']['account'] ?? '') !== ''): ?>
+                                <div class="faint small">as <?= e((string) $backend['options']['account']) ?></div>
                             <?php endif; ?>
                         </td>
                         <td class="small tabular">
@@ -195,14 +204,14 @@ View::startSection('content');
                                             data-fill-region="<?= e((string) ($backend['options']['region'] ?? '')) ?>"
                                             data-fill-bucket="<?= e((string) ($backend['options']['bucket'] ?? '')) ?>"
                                             data-fill-access_key="<?= e((string) ($backend['options']['access_key'] ?? '')) ?>"
-                                            data-fill-client_id="<?= e((string) ($backend['options']['client_id'] ?? '')) ?>"
+                                            data-fill-account="<?= e((string) ($backend['options']['account'] ?? '')) ?>"
                                             data-fill-folder_id="<?= e((string) ($backend['options']['folder_id'] ?? '')) ?>"
                                             data-fill-host_fingerprint="<?= e((string) ($backend['options']['host_fingerprint'] ?? '')) ?>"
                                             data-fill-timeout="<?= e((string) ($backend['options']['timeout'] ?? 30)) ?>"><?= icon('edit') ?> Edit</button>
 
                                     <?php if ($backend['driver'] === 'gdrive'): ?>
                                         <a class="dropdown__item" href="<?= e(url('/admin/storage/' . $backend['id'] . '/google/connect')) ?>">
-                                            <?= icon('link') ?> <?= $backend['is_connected'] ? 'Reconnect' : 'Connect' ?> Google Drive
+                                            <?= icon('link') ?> Reconnect Google Drive
                                         </a>
                                     <?php endif; ?>
 
@@ -343,6 +352,48 @@ View::startSection('content');
     </div>
 </div>
 
+<div class="modal-backdrop hidden" id="modal-google-setup">
+    <div class="modal">
+        <form method="post" action="<?= e(url('/admin/storage/google/client')) ?>">
+            <?= csrf_field() ?>
+            <div class="modal__head"><?= icon('cloud') ?><h3>Set up Google sign-in (once)</h3>
+                <button class="btn btn-ghost btn-icon btn-sm" type="button" data-modal-close><?= icon('x') ?></button>
+            </div>
+            <div class="modal__body">
+                <p class="small">
+                    Google only lets registered apps ask for Drive access, so this site needs its own OAuth client.
+                    You do this once; after that every Drive is linked with a single "Connect Google Drive" click.
+                </p>
+                <ol class="small muted">
+                    <li>Open <span class="mono">console.cloud.google.com</span>, create (or pick) a project.</li>
+                    <li><strong>APIs &amp; Services → Library</strong>: enable <strong>Google Drive API</strong>.</li>
+                    <li><strong>OAuth consent screen</strong>: type External, add your email, then <strong>Publish app</strong>
+                        (left in "Testing", Google expires the connection every 7 days).</li>
+                    <li><strong>Credentials → Create credentials → OAuth client ID</strong>, type <strong>Web application</strong>.</li>
+                    <li>Authorised redirect URI: <span class="mono"><?= e($google['redirect_uri']) ?></span></li>
+                    <li>Copy the client ID and secret here.</li>
+                </ol>
+                <?php if ($google['from_env']): ?>
+                    <p class="faint small">Currently read from GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET in .env. Saving here overrides it.</p>
+                <?php endif; ?>
+                <div class="field">
+                    <label class="label">Client ID <span class="req">*</span></label>
+                    <input class="input mono" name="google_client_id" required value="<?= e($google['client_id']) ?>" placeholder="1234-abc.apps.googleusercontent.com">
+                </div>
+                <div class="field">
+                    <label class="label">Client secret <?= $google['configured'] ? '' : '<span class="req">*</span>' ?></label>
+                    <input class="input" name="google_client_secret" type="password" autocomplete="new-password"
+                           <?= $google['configured'] ? 'placeholder="saved — leave blank to keep"' : 'required' ?>>
+                </div>
+            </div>
+            <div class="modal__foot">
+                <button class="btn" type="button" data-modal-close>Cancel</button>
+                <button class="btn btn-primary" type="submit"><?= icon('save') ?> Save</button>
+            </div>
+        </form>
+    </div>
+</div>
+
 <div class="modal-backdrop hidden" id="modal-storage-new">
     <div class="modal">
         <form method="post" action="<?= e(url('/admin/storage')) ?>" data-storage-form>
@@ -449,26 +500,18 @@ View::startSection('content');
                 </div>
 
                 <div data-storage-fields="gdrive">
-                    <div class="form-row">
-                        <div class="field">
-                            <label class="label">OAuth client ID <span class="req">*</span></label>
-                            <input class="input mono" name="client_id" autocomplete="off" placeholder="1234-abc.apps.googleusercontent.com">
-                        </div>
-                        <div class="field">
-                            <label class="label">OAuth client secret</label>
-                            <input class="input" name="client_secret" type="password" autocomplete="new-password">
-                        </div>
-                    </div>
-                    <div class="field">
-                        <label class="label">Folder ID (optional)</label>
-                        <input class="input mono" name="folder_id" placeholder="blank = create an &quot;S3 Lite storage&quot; folder">
-                    </div>
-                    <p class="faint small">
-                        In Google Cloud Console create an OAuth client of type <strong>Web application</strong>, enable the
-                        Google Drive API, and add this as an authorised redirect URI:
-                        <span class="mono"><?= e(\App\Controllers\Web\AdminController::googleRedirectUri()) ?></span>.
-                        After saving you will be sent to Google to allow access.
-                    </p>
+                    <?php if ($google['configured']): ?>
+                        <p class="small">
+                            Nothing to fill in. Press <strong>Continue with Google</strong>, pick the Google account and
+                            allow access — the backend is created and named after that account. Set a backup layer below
+                            first if this Drive should hold copies of everything.
+                        </p>
+                    <?php else: ?>
+                        <p class="small">
+                            Google sign-in is not set up on this site yet.
+                            <button class="btn btn-sm" type="button" data-modal-close data-modal-open="modal-google-setup">Set it up (once)</button>
+                        </p>
+                    <?php endif; ?>
                 </div>
 
                 <div class="form-row" data-storage-fields="ftp ftps sftp s3">
@@ -614,26 +657,15 @@ View::startSection('content');
                 </div>
 
                 <div data-storage-fields="gdrive">
-                    <div class="form-row">
-                        <div class="field">
-                            <label class="label">OAuth client ID <span class="req">*</span></label>
-                            <input class="input mono" name="client_id" autocomplete="off" placeholder="1234-abc.apps.googleusercontent.com">
-                        </div>
-                        <div class="field">
-                            <label class="label">OAuth client secret</label>
-                            <input class="input" name="client_secret" type="password" autocomplete="new-password">
-                        </div>
+                    <div class="field">
+                        <label class="label">Google account</label>
+                        <input class="input mono" name="account" readonly>
                     </div>
                     <div class="field">
-                        <label class="label">Folder ID (optional)</label>
-                        <input class="input mono" name="folder_id" placeholder="blank = create an &quot;S3 Lite storage&quot; folder">
+                        <label class="label">Drive folder ID</label>
+                        <input class="input mono" name="folder_id" placeholder="the &quot;S3 Lite storage&quot; folder">
                     </div>
-                    <p class="faint small">
-                        In Google Cloud Console create an OAuth client of type <strong>Web application</strong>, enable the
-                        Google Drive API, and add this as an authorised redirect URI:
-                        <span class="mono"><?= e(\App\Controllers\Web\AdminController::googleRedirectUri()) ?></span>.
-                        After saving you will be sent to Google to allow access.
-                    </p>
+                    <p class="faint small">To switch accounts or fix expired access, use <strong>Reconnect Google Drive</strong> in the row's menu.</p>
                 </div>
 
                 <div class="form-row" data-storage-fields="ftp ftps sftp s3">
@@ -673,7 +705,7 @@ View::startSection('content');
                     </p>
                 </div>
 
-                <p class="faint small mt-2" data-storage-fields="ftp ftps sftp s3 gdrive">
+                <p class="faint small mt-2" data-storage-fields="ftp ftps sftp s3">
                     Leave the credential fields blank to keep what is already stored.
                 </p>
             </div>
@@ -724,6 +756,17 @@ View::startSection('scripts');
 
         const port = form.querySelector('[name="port"]');
         if (port) port.placeholder = driver === 'sftp' ? '22' : '21';
+
+        // A new Drive is named after the Google account it signs in with.
+        const name = form.querySelector('[name="name"]');
+        const submit = form.querySelector('[type="submit"]');
+        if (source.tagName === 'SELECT') {
+            if (name) name.required = driver !== 'gdrive';
+            if (submit) {
+                submit.dataset.label = submit.dataset.label || submit.innerHTML;
+                submit.innerHTML = driver === 'gdrive' ? 'Continue with Google' : submit.dataset.label;
+            }
+        }
     }
 
     forms.forEach(function (form) {

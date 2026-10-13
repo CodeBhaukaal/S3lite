@@ -27,6 +27,11 @@ final class GoogleDriveDriver extends RemoteDriver
 
     private const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
+    /** Defaults when a backend's options do not override them (tests point these at a fake). */
+    public static string $defaultTokenUrl = self::TOKEN_URL;
+    public static string $defaultApiBase = 'https://www.googleapis.com/drive/v3';
+    public static string $defaultUploadBase = 'https://www.googleapis.com/upload/drive/v3';
+
     /** Access tokens per refresh token, shared by every instance in this request. */
     private static array $tokens = [];
 
@@ -267,9 +272,9 @@ final class GoogleDriveDriver extends RemoteDriver
      *
      * @return array{refresh_token:string, access_token:string}
      */
-    public static function exchangeCode(string $clientId, string $clientSecret, string $code, string $redirectUri, string $tokenUrl = self::TOKEN_URL): array
+    public static function exchangeCode(string $clientId, string $clientSecret, string $code, string $redirectUri, ?string $tokenUrl = null): array
     {
-        $tokens = self::postToken($tokenUrl, [
+        $tokens = self::postToken($tokenUrl ?? self::$defaultTokenUrl, [
             'grant_type'    => 'authorization_code',
             'code'          => $code,
             'client_id'     => $clientId,
@@ -282,6 +287,28 @@ final class GoogleDriveDriver extends RemoteDriver
         }
 
         return ['refresh_token' => (string) $tokens['refresh_token'], 'access_token' => (string) ($tokens['access_token'] ?? '')];
+    }
+
+    /** The signed-in account's email, for naming the backend. '' if Google will not say. */
+    public static function accountEmail(string $accessToken): string
+    {
+        if ($accessToken === '') {
+            return '';
+        }
+
+        $ch = curl_init(rtrim(self::$defaultApiBase, '/') . '/about?fields=' . rawurlencode('user(emailAddress)'));
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 15,
+            CURLOPT_HTTPHEADER     => ['Authorization: Bearer ' . $accessToken],
+        ]);
+        $body = curl_exec($ch);
+        $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        $decoded = $status === 200 && is_string($body) ? json_decode($body, true) : null;
+
+        return is_array($decoded) ? (string) ($decoded['user']['emailAddress'] ?? '') : '';
     }
 
     public static function authorizationUrl(string $clientId, string $redirectUri, string $state): string
@@ -322,7 +349,7 @@ final class GoogleDriveDriver extends RemoteDriver
         }
 
         try {
-            $tokens = self::postToken((string) $this->option('token_url', self::TOKEN_URL), [
+            $tokens = self::postToken((string) $this->option('token_url', self::$defaultTokenUrl), [
                 'grant_type'    => 'refresh_token',
                 'refresh_token' => $this->refreshToken,
                 'client_id'     => $this->clientId,
@@ -470,14 +497,14 @@ final class GoogleDriveDriver extends RemoteDriver
 
     private function api(string $path, array $query = []): string
     {
-        $base = rtrim((string) $this->option('api_base', 'https://www.googleapis.com/drive/v3'), '/');
+        $base = rtrim((string) $this->option('api_base', self::$defaultApiBase), '/');
 
         return $base . $path . ($query === [] ? '' : '?' . http_build_query($query));
     }
 
     private function upload(string $path, array $query): string
     {
-        $base = rtrim((string) $this->option('upload_base', 'https://www.googleapis.com/upload/drive/v3'), '/');
+        $base = rtrim((string) $this->option('upload_base', self::$defaultUploadBase), '/');
 
         return $base . $path . '?' . http_build_query($query);
     }

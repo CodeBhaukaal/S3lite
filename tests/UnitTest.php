@@ -1048,6 +1048,80 @@ final class UnitTest extends TestCase
         );
     }
 
+    /**
+     * One-click linking: with the site's client saved once, signing in creates
+     * a working backend named after the account; a forged return is refused;
+     * reconnecting updates the same backend.
+     */
+    public function testConnectGoogleDriveInOneClick(): void
+    {
+        $root = rtrim(str_replace('\\', '/', sys_get_temp_dir()), '/') . '/fake-gdrive-' . Str::random(6);
+        $base = $this->startRouterServer('fake-gdrive.php', ['FAKE_GDRIVE_ROOT' => $root]);
+
+        if ($base === null) {
+            $this->skip('Could not start the fake Google Drive server');
+        }
+
+        $driver = \App\Storage\GoogleDriveDriver::class;
+        $saved = [$driver::$defaultTokenUrl, $driver::$defaultApiBase, $driver::$defaultUploadBase];
+        [$driver::$defaultTokenUrl, $driver::$defaultApiBase, $driver::$defaultUploadBase] = [$base . '/token', $base . '/drive/v3', $base . '/upload/drive/v3'];
+        $before = \App\Core\Database::select("SELECT * FROM settings WHERE key_name IN ('google_client_id', 'google_client_secret')");
+        $created = null;
+
+        try {
+            $this->assertThrows(
+                \App\Http\Exceptions\HttpException::class,
+                static fn () => \App\Services\GoogleDriveService::saveClient('not-a-client-id', 'x')
+            );
+
+            \App\Services\GoogleDriveService::saveClient('123-abc.apps.googleusercontent.com', 'site-secret');
+            $this->assertTrue(\App\Services\GoogleDriveService::configured());
+            $this->assertSame('site-secret', \App\Services\GoogleDriveService::clientSecret());
+            $this->assertNotContains('site-secret', (string) \App\Core\Database::scalar(
+                "SELECT value FROM settings WHERE key_name = 'google_client_secret'"
+            ), 'The secret must be stored encrypted');
+
+            $url = \App\Services\GoogleDriveService::start();
+            $this->assertContains('client_id=123-abc.apps.googleusercontent.com', $url);
+            parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+
+            $this->assertThrows(
+                \App\Http\Exceptions\HttpException::class,
+                static fn () => \App\Services\GoogleDriveService::finish('forged', 'good-code')
+            );
+
+            // The forged attempt used up the pending sign-in; start again.
+            $url = \App\Services\GoogleDriveService::start(null, true);
+            parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+            $created = \App\Services\GoogleDriveService::finish((string) $query['state'], 'good-code');
+
+            $this->assertSame('gdrive', $created['driver']);
+            $this->assertContains('owner@example.com', $created['name']);
+            $this->assertNotNull($created['replica_priority'], 'Asked for as a layer, so it is one');
+            $this->assertNotEmpty($created['options']['folder_id'], 'The folder is pinned at connect time');
+            $this->assertTrue(\App\Models\StorageBackend::publicArray($created)['is_connected']);
+            $this->assertTrue(\App\Services\StorageBackendService::test((int) $created['id'])['ok'], 'Works with only the site client');
+
+            // Reconnecting keeps the same backend.
+            $url = \App\Services\GoogleDriveService::start((int) $created['id']);
+            parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+            $again = \App\Services\GoogleDriveService::finish((string) $query['state'], 'good-code');
+            $this->assertSame((int) $created['id'], (int) $again['id']);
+        } finally {
+            [$driver::$defaultTokenUrl, $driver::$defaultApiBase, $driver::$defaultUploadBase] = $saved;
+            if ($created !== null) {
+                \App\Core\Database::statement('DELETE FROM file_replicas WHERE disk = ?', [$created['slug']]);
+                \App\Models\StorageBackend::deleteById((int) $created['id']);
+            }
+            \App\Core\Database::statement("DELETE FROM settings WHERE key_name IN ('google_client_id', 'google_client_secret')");
+            foreach ($before as $row) {
+                \App\Core\Database::insert('settings', $row);
+            }
+            \App\Services\SettingService::flush();
+            StorageManager::reset();
+        }
+    }
+
     /** The case the feature exists for: FTP dies, Drive serves, then takes over. */
     public function testGoogleDriveAsBackupLayer(): void
     {

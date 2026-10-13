@@ -102,7 +102,7 @@ if (preg_match('#^/upload/session/([a-f0-9]+)$#', $path, $m) === 1 && $method ==
 
 // --- Drive v3 ------------------------------------------------------------
 if ($path === '/drive/v3/about') {
-    reply(200, ['storageQuota' => ['limit' => '1000000', 'usage' => '1234']]);
+    reply(200, ['storageQuota' => ['limit' => '1000000', 'usage' => '1234'], 'user' => ['emailAddress' => 'owner@example.com']]);
 }
 
 if ($path === '/drive/v3/files' && $method === 'GET') {

@@ -581,6 +581,12 @@ final class AdminController extends Controller
             'backends'    => $backends,
             'usage'       => StorageBackendService::usageBySlug(),
             'replicas'    => \App\Services\ReplicationService::statusBySlug(),
+            'google'      => [
+                'configured'   => \App\Services\GoogleDriveService::configured(),
+                'from_env'     => \App\Services\GoogleDriveService::fromEnv(),
+                'client_id'    => \App\Services\GoogleDriveService::clientId(),
+                'redirect_uri' => \App\Services\GoogleDriveService::redirectUri(),
+            ],
             'cdn'         => [
                 'enabled'   => \App\Services\CdnCacheService::enabled(),
                 'days'      => \App\Services\CdnCacheService::days(),
@@ -600,12 +606,12 @@ final class AdminController extends Controller
 
     public function storeBackend(Request $request): Response
     {
-        $backend = StorageBackendService::create($this->backendInput($request));
-
-        // Drive cannot be tested until the account is linked; go do that.
-        if ($backend['driver'] === 'gdrive') {
-            return $this->redirect('/admin/storage/' . $backend['id'] . '/google/connect');
+        // Drive is linked by signing in, not by filling a form.
+        if ($request->string('driver') === 'gdrive') {
+            return $this->redirect('/admin/storage/google/start' . ($request->int('replica_priority') > 0 ? '?layer=1' : ''));
         }
+
+        $backend = StorageBackendService::create($this->backendInput($request));
 
         // Tell the admin straight away whether the credentials actually work.
         $test = StorageBackendService::test($backend);
@@ -706,7 +712,25 @@ final class AdminController extends Controller
         return $this->back($request, 'success', $message);
     }
 
-    /** Step 1 of linking Google Drive: send the admin to Google's consent screen. */
+    /** One-time setup: the site's Google OAuth client. */
+    public function saveGoogleClient(Request $request): Response
+    {
+        \App\Services\GoogleDriveService::saveClient($request->string('google_client_id'), $request->string('google_client_secret'));
+
+        return $this->back($request, 'success', 'Google sign-in is set up. Click "Connect Google Drive" to link an account.');
+    }
+
+    /** Link a new Google Drive: straight to Google's account picker. */
+    public function googleStart(Request $request): Response
+    {
+        try {
+            return $this->redirect(\App\Services\GoogleDriveService::start(null, $request->bool('layer')));
+        } catch (\App\Http\Exceptions\HttpException $e) {
+            return $this->redirect('/admin/storage', 'error', $e->getMessage());
+        }
+    }
+
+    /** Re-link an existing Drive backend (expired or revoked access). */
     public function googleConnect(Request $request, string $id): Response
     {
         $backend = \App\Models\StorageBackend::find((int) $id);
@@ -715,84 +739,35 @@ final class AdminController extends Controller
             return $this->redirect('/admin/storage', 'error', 'That is not a Google Drive backend.');
         }
 
-        $options = is_array($backend['options'] ?? null) ? $backend['options'] : [];
-        $state = bin2hex(random_bytes(16));
-
-        // The state ties Google's redirect back to this admin and this backend,
-        // so a forged callback cannot attach someone else's Drive.
-        \App\Http\Session::put('gdrive_oauth', ['state' => $state, 'backend_id' => (int) $backend['id'], 'at' => time()]);
-
-        return $this->redirect(\App\Storage\GoogleDriveDriver::authorizationUrl(
-            (string) ($options['client_id'] ?? ''),
-            self::googleRedirectUri(),
-            $state
-        ));
+        try {
+            return $this->redirect(\App\Services\GoogleDriveService::start((int) $backend['id']));
+        } catch (\App\Http\Exceptions\HttpException $e) {
+            return $this->redirect('/admin/storage', 'error', $e->getMessage());
+        }
     }
 
-    /** Step 2: Google sends the admin back here with a one-time code. */
+    /** Google sends the admin back here; the backend is created or reconnected. */
     public function googleCallback(Request $request): Response
     {
-        $pending = \App\Http\Session::get('gdrive_oauth');
-        \App\Http\Session::forget('gdrive_oauth');
-
-        if (!is_array($pending) || !hash_equals((string) $pending['state'], $request->string('state')) || time() - (int) $pending['at'] > 900) {
-            return $this->redirect('/admin/storage', 'error', 'The Google sign-in expired or did not match. Click "Connect Google Drive" again.');
-        }
-
-        if ($request->string('error') !== '') {
-            return $this->redirect('/admin/storage', 'warning', 'Google Drive was not connected: ' . $request->string('error'));
-        }
-
-        $backend = \App\Models\StorageBackend::find((int) $pending['backend_id']);
-
-        if ($backend === null || $backend['driver'] !== 'gdrive') {
-            return $this->redirect('/admin/storage', 'error', 'Backend not found.');
-        }
-
-        $options = is_array($backend['options'] ?? null) ? $backend['options'] : [];
-        $credentials = \App\Models\StorageBackend::credentials($backend);
-
         try {
-            $tokens = \App\Storage\GoogleDriveDriver::exchangeCode(
-                (string) ($options['client_id'] ?? ''),
-                (string) ($credentials['client_secret'] ?? ''),
+            $backend = \App\Services\GoogleDriveService::finish(
+                $request->string('state'),
                 $request->string('code'),
-                self::googleRedirectUri()
+                $request->string('error')
             );
-
-            \App\Models\StorageBackend::updateById((int) $backend['id'], [
-                'secret' => \App\Models\StorageBackend::mergeCredentials($backend, ['refresh_token' => $tokens['refresh_token']]),
-            ]);
-            \App\Storage\StorageManager::reset();
-
-            // Pin the folder now, so later requests skip the lookup.
-            $backend = \App\Models\StorageBackend::find((int) $backend['id']) ?? $backend;
-            $driver = \App\Storage\StorageManager::fromBackend($backend);
-
-            if ($driver instanceof \App\Storage\GoogleDriveDriver && ($options['folder_id'] ?? '') === '') {
-                $options['folder_id'] = $driver->folderId();
-                \App\Models\StorageBackend::updateById((int) $backend['id'], ['options' => $options]);
-                \App\Storage\StorageManager::reset();
-            }
         } catch (\Throwable $e) {
-            return $this->redirect('/admin/storage', 'error', 'Could not connect Google Drive: ' . $e->getMessage());
+            return $this->redirect('/admin/storage', 'error', 'Google Drive was not connected: ' . $e->getMessage());
         }
-
-        \App\Services\AuditService::log('storage.gdrive_connect', 'storage', (int) $backend['id'], 'Connected Google Drive to ' . $backend['name']);
 
         $test = StorageBackendService::test((int) $backend['id']);
 
         return $this->redirect(
             '/admin/storage',
             $test['ok'] ? 'success' : 'warning',
-            $test['ok'] ? 'Google Drive connected and working.' : 'Google Drive connected, but the test failed: ' . $test['message']
+            $test['ok']
+                ? $backend['name'] . ' is connected and working.'
+                : $backend['name'] . ' connected, but the test failed: ' . $test['message']
         );
-    }
-
-    /** The exact URL to register as an "Authorised redirect URI" in Google Cloud. */
-    public static function googleRedirectUri(): string
-    {
-        return url('/admin/storage/google/callback');
     }
 
     public function retryReplicas(Request $request, string $id): Response

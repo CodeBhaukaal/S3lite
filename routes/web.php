@@ -166,7 +166,9 @@ $router->group(['prefix' => '/admin', 'middleware' => ['installed', 'auth', 'adm
 
     $router->get('/storage', AdminController::class . '@storage');
     $router->post('/storage', AdminController::class . '@storeBackend')->middleware('csrf');
-    // Before the /storage/{id}/... routes, which would otherwise take "cdn" as an id.
+    // Before the /storage/{id}/... routes, which would otherwise take "cdn"/"google" as an id.
+    $router->get('/storage/google/start', AdminController::class . '@googleStart');
+    $router->post('/storage/google/client', AdminController::class . '@saveGoogleClient')->middleware('csrf');
     $router->post('/storage/cdn', AdminController::class . '@saveCdn')->middleware('csrf');
     $router->post('/storage/cdn/test', AdminController::class . '@testCdn')->middleware('csrf', 'throttle:20,60');
     $router->post('/storage/cdn/rule', AdminController::class . '@cdnRule')->middleware('csrf', 'throttle:20,60');

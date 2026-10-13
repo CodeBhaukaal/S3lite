@@ -64,6 +64,17 @@ final class StorageBackendService
         $data = self::normalise($input, (string) $backend['driver']);
         unset($data['driver']);
 
+        // Drive details the form does not show (account, an auto-created
+        // folder) survive an edit that leaves them blank.
+        if ($backend['driver'] === 'gdrive') {
+            $old = is_array($backend['options'] ?? null) ? $backend['options'] : [];
+            foreach (['account', 'folder_id', 'client_id'] as $key) {
+                if (($data['options'][$key] ?? '') === '' && ($old[$key] ?? '') !== '') {
+                    $data['options'][$key] = $old[$key];
+                }
+            }
+        }
+
         // A partial API update that does not mention the layer leaves it alone.
         if (!array_key_exists('replica_priority', $input)) {
             $data['replica_priority'] = $backend['replica_priority'] === null ? null : (int) $backend['replica_priority'];
@@ -543,7 +554,7 @@ final class StorageBackendService
             throw new HttpException(422, 'S3 backends need an endpoint and a bucket.', 'invalid_s3_config');
         }
 
-        if ($driver === 'gdrive' && ($options['client_id'] ?? '') === '') {
+        if ($driver === 'gdrive' && ($options['client_id'] ?? '') === '' && !GoogleDriveService::configured()) {
             throw new HttpException(422, 'Google Drive needs the OAuth client ID from your Google Cloud project.', 'invalid_gdrive_config');
         }
 
@@ -593,6 +604,8 @@ final class StorageBackendService
 
         if ($driver === 'gdrive') {
             $options['client_id'] = trim((string) ($input['client_id'] ?? ''));
+            // Keep the connected account's label across edits.
+            $options['account'] = trim((string) ($input['account'] ?? ''));
             // Blank = an "S3 Lite storage" folder is created on first use.
             $options['folder_id'] = trim((string) ($input['folder_id'] ?? ''));
         }
