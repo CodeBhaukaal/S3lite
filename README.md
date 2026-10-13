@@ -195,8 +195,13 @@ The install wizard reports all of these before it writes anything.
 
 **Storage** — upload, download, preview, rename, move, copy, tag, search,
 folders, trash with retention, versioning with rollback, SHA-256 duplicate
-detection, per-user quotas, pluggable drivers (local today, S3-compatible
-included).
+detection, per-user quotas. Files can live on this server, your own
+FTP/FTPS/SFTP server, any S3-compatible bucket or Google Drive — with
+background backup copies on other backends, automatic fail-over when one goes
+down, and one-click migration between them.
+
+**CDN caching** — public download links can be cached by Cloudflare for up to
+30 days (configurable), so popular files stop costing the server a transfer.
 
 **Sharing** — permanent links, expiring links, password protection, download
 limits, preview toggles, and HMAC-signed temporary URLs that need no account.
@@ -211,6 +216,45 @@ sync job that indexes anything uploaded out-of-band into the web panel.
 
 **Operations** — health checks, CPU/memory/disk metrics, throughput, job queue,
 database backups, audit log, application log viewer, IP allow/block rules.
+
+---
+
+## Storage, backups and caching
+
+Everything below lives on **Admin → Storage**.
+
+**Backends.** Add the local disk, FTP, FTPS, SFTP, S3-compatible storage or
+Google Drive, test each one, and mark one as the default: new uploads go there.
+Every file remembers where it was written, so changing the default never breaks
+a download.
+
+**Google Drive.** Enter your Google OAuth client once (the dialog links to each
+Google Cloud page and shows the redirect URI to register; or set
+`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`). After that, **Connect Google Drive**
+is: pick the account, allow, done — the backend is created and named after the
+account. Publish the app's consent screen in Google Cloud; in "Testing" mode
+Google drops the connection every 7 days.
+
+**Backup layers.** Give any backend a backup layer number (1, 2, 3…). Every
+upload is copied there in the background, and older files are copied when a
+backend first becomes a layer. If the default backend cannot serve a file, the
+download comes from the first layer with a verified copy.
+
+**Migration.** *Migrate files* moves everything from one backend to another in
+batches, verifying each object before removing the source copy. It also works
+when the source is down, by reading from a backup layer.
+
+**Cloudflare caching.** Turn it on and public share links that never expire (or
+have at least a week left), with no password and no download limit, download
+through `/cdn/<token>/<filename>` with a public `Cache-Control` header. Add a
+Cloudflare API token (Zone → Cache Rules: Edit and Zone → Cache Purge: Purge)
+and the panel creates the cache rule and purges cached copies when a link or
+its file changes. Without a token, create one cache rule by hand: URI path
+starts with `/cdn/` → Eligible for cache → Edge TTL "use cache-control header
+if present, bypass cache if not".
+
+Backups and migrations run from the queue, so schedule `public/cron.php` (see
+below).
 
 ---
 
@@ -266,9 +310,11 @@ self-scheduling entry point that works out which tasks are due:
 */5 * * * * /usr/local/bin/php /path/to/s3/public/cron.php
 ```
 
-That one line covers the queue (every run), metrics samples (5 min), SFTP sync
-(10 min), cleanup and backups (daily) and an integrity check (weekly). Overlapping
-runs are prevented by a lock file.
+That one line covers the queue (every run — this is what copies new uploads to
+your backup storage and moves files during a migration), metrics samples
+(5 min), SFTP sync (10 min), a retry sweep for backup copies a down backend
+missed (15 min), cleanup and backups (daily) and an integrity check (weekly).
+Overlapping runs are prevented by a lock file.
 
 **No cron on your host?** Set `CRON_TOKEN` in `.env` and call the same file over
 HTTP from a free service such as cron-job.org:
