@@ -364,14 +364,32 @@ View::startSection('content');
                     Google only lets registered apps ask for Drive access, so this site needs its own OAuth client.
                     You do this once; after that every Drive is linked with a single "Connect Google Drive" click.
                 </p>
+                <?php $gc = 'https://console.cloud.google.com'; ?>
                 <ol class="small muted">
-                    <li>Open <span class="mono">console.cloud.google.com</span>, create (or pick) a project.</li>
-                    <li><strong>APIs &amp; Services → Library</strong>: enable <strong>Google Drive API</strong>.</li>
-                    <li><strong>OAuth consent screen</strong>: type External, add your email, then <strong>Publish app</strong>
-                        (left in "Testing", Google expires the connection every 7 days).</li>
-                    <li><strong>Credentials → Create credentials → OAuth client ID</strong>, type <strong>Web application</strong>.</li>
-                    <li>Authorised redirect URI: <span class="mono"><?= e($google['redirect_uri']) ?></span></li>
-                    <li>Copy the client ID and secret here.</li>
+                    <li>
+                        <a href="<?= e($gc . '/projectcreate') ?>" target="_blank" rel="noopener">Create a project <?= icon('external') ?></a>
+                        (or pick an existing one at the top of the console).
+                    </li>
+                    <li>
+                        <a href="<?= e($gc . '/apis/library/drive.googleapis.com') ?>" target="_blank" rel="noopener">Enable the Google Drive API <?= icon('external') ?></a>
+                        — press <strong>Enable</strong>.
+                    </li>
+                    <li>
+                        <a href="<?= e($gc . '/auth/branding') ?>" target="_blank" rel="noopener">Set up the consent screen <?= icon('external') ?></a>:
+                        app name, your email, audience <strong>External</strong>. Then on
+                        <a href="<?= e($gc . '/auth/audience') ?>" target="_blank" rel="noopener">Audience <?= icon('external') ?></a>
+                        press <strong>Publish app</strong> — left in "Testing", Google drops the connection every 7 days.
+                    </li>
+                    <li>
+                        <a href="<?= e($gc . '/auth/clients/create') ?>" target="_blank" rel="noopener">Create an OAuth client <?= icon('external') ?></a>,
+                        application type <strong>Web application</strong>.
+                    </li>
+                    <li>
+                        Under <strong>Authorised redirect URIs</strong> add:
+                        <span class="mono"><?= e($google['redirect_uri']) ?></span>
+                        <button class="btn btn-sm" type="button" data-copy="<?= e($google['redirect_uri']) ?>" data-copy-label="Copy"><?= icon('copy') ?> Copy</button>
+                    </li>
+                    <li>Press <strong>Create</strong>, then copy the client ID and client secret it shows into the boxes below.</li>
                 </ol>
                 <?php if ($google['from_env']): ?>
                     <p class="faint small">Currently read from GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET in .env. Saving here overrides it.</p>
