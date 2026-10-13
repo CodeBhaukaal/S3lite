@@ -914,15 +914,15 @@ final class UnitTest extends TestCase
         }
     }
 
-    /** Start tests/fake-gdrive.php on a free port; returns its base URL or null. */
-    private function startFakeGdrive(string $root): ?string
+    /** Start a tests/ router script under php -S on a free port; returns its base URL or null. */
+    private function startRouterServer(string $script, array $extraEnv): ?string
     {
         $port = random_int(25401, 26000);
         $null = PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
-        $env = array_merge(getenv(), ['FAKE_GDRIVE_ROOT' => $root]);
+        $env = array_merge(getenv(), $extraEnv);
 
         $process = @proc_open(
-            [PHP_BINARY, '-S', '127.0.0.1:' . $port, str_replace('\\', '/', dirname(__DIR__) . '/tests/fake-gdrive.php')],
+            [PHP_BINARY, '-S', '127.0.0.1:' . $port, str_replace('\\', '/', dirname(__DIR__) . '/tests/' . $script)],
             [['pipe', 'r'], ['file', $null, 'w'], ['file', $null, 'w']],
             $pipes,
             null,
@@ -963,7 +963,7 @@ final class UnitTest extends TestCase
     public function testGoogleDriveDriverRoundTrip(): void
     {
         $root = rtrim(str_replace('\\', '/', sys_get_temp_dir()), '/') . '/fake-gdrive-' . Str::random(6);
-        $base = $this->startFakeGdrive($root);
+        $base = $this->startRouterServer('fake-gdrive.php', ['FAKE_GDRIVE_ROOT' => $root]);
 
         if ($base === null) {
             $this->skip('Could not start the fake Google Drive server');
@@ -1018,7 +1018,7 @@ final class UnitTest extends TestCase
     public function testGoogleDriveOauthAndBadToken(): void
     {
         $root = rtrim(str_replace('\\', '/', sys_get_temp_dir()), '/') . '/fake-gdrive-' . Str::random(6);
-        $base = $this->startFakeGdrive($root);
+        $base = $this->startRouterServer('fake-gdrive.php', ['FAKE_GDRIVE_ROOT' => $root]);
 
         if ($base === null) {
             $this->skip('Could not start the fake Google Drive server');
@@ -1052,7 +1052,7 @@ final class UnitTest extends TestCase
     public function testGoogleDriveAsBackupLayer(): void
     {
         $root = rtrim(str_replace('\\', '/', sys_get_temp_dir()), '/') . '/fake-gdrive-' . Str::random(6);
-        $base = $this->startFakeGdrive($root);
+        $base = $this->startRouterServer('fake-gdrive.php', ['FAKE_GDRIVE_ROOT' => $root]);
 
         if ($base === null) {
             $this->skip('Could not start the fake Google Drive server');
@@ -1115,6 +1115,206 @@ final class UnitTest extends TestCase
             }
             StorageManager::reset();
         }
+    }
+
+    /** Run $test with CDN settings applied, then remove them again. */
+    private function withCdnSettings(array $values, callable $test): void
+    {
+        $keys = ['cdn_cache_enabled', 'cdn_cache_days', 'cdn_min_lifetime_days', 'cloudflare_zone_id', 'cloudflare_api_token'];
+        $before = [];
+        foreach ($keys as $key) {
+            $before[$key] = \App\Core\Database::selectOne('SELECT * FROM settings WHERE key_name = ?', [$key]);
+        }
+
+        try {
+            \App\Services\SettingService::setMany($values, 'cdn');
+            $test();
+        } finally {
+            foreach ($before as $key => $row) {
+                \App\Core\Database::delete('settings', 'key_name = ?', [$key]);
+                if ($row !== null) {
+                    \App\Core\Database::insert('settings', $row);
+                }
+            }
+            \App\Services\SettingService::flush();
+        }
+    }
+
+    public function testCdnCachesOnlySafeLinks(): void
+    {
+        $now = 1_800_000_000;
+        $share = ['is_active' => 1, 'password_hash' => null, 'max_downloads' => null, 'expires_at' => null];
+        $in = static fn (int $days): string => date('Y-m-d H:i:s', $now + $days * 86400);
+
+        $this->withCdnSettings(['cdn_cache_enabled' => false], function () use ($share, $now): void {
+            $this->assertSame(0, \App\Services\CdnCacheService::ttlForShare($share, $now), 'Off means never cached');
+        });
+
+        $this->withCdnSettings(['cdn_cache_enabled' => true, 'cdn_cache_days' => 30, 'cdn_min_lifetime_days' => 7], function () use ($share, $now, $in): void {
+            $ttl = static fn (array $s): int => \App\Services\CdnCacheService::ttlForShare($s, $now);
+
+            $this->assertSame(30 * 86400, $ttl($share), 'A permanent link is cached for the configured days');
+            $this->assertSame(20 * 86400, $ttl(['expires_at' => $in(20)] + $share), 'Never past the expiry');
+            $this->assertSame(30 * 86400, $ttl(['expires_at' => $in(90)] + $share));
+            $this->assertSame(0, $ttl(['expires_at' => $in(3)] + $share), 'Under a week left: not cached');
+            $this->assertSame(0, $ttl(['password_hash' => 'x'] + $share), 'Password links would leak');
+            $this->assertSame(0, $ttl(['max_downloads' => 5] + $share), 'A limit cannot be enforced from a cache');
+            $this->assertSame(0, $ttl(['is_active' => 0] + $share));
+
+            $headers = \App\Services\CdnCacheService::headers(86400);
+            $this->assertContains('public', $headers['Cache-Control']);
+            $this->assertContains('s-maxage=86400', $headers['Cache-Control']);
+
+            $url = \App\Services\CdnCacheService::url(['token' => 'tok', 'file_id' => 1], ['name' => 'my file.zip', 'uuid' => 'u']);
+            $this->assertContains('/cdn/tok/my%20file.zip', $url);
+            $this->assertNotContains('?file=', $url);
+            $folderUrl = \App\Services\CdnCacheService::url(['token' => 'tok', 'file_id' => null], ['name' => 'a.pdf', 'uuid' => 'u-1']);
+            $this->assertContains('a.pdf?file=u-1', $folderUrl);
+        });
+    }
+
+    public function testCloudflareCacheRuleAndPurge(): void
+    {
+        $root = rtrim(str_replace('\\', '/', sys_get_temp_dir()), '/') . '/fake-cf-' . Str::random(6);
+        $base = $this->startRouterServer('fake-cloudflare.php', ['FAKE_CF_ROOT' => $root]);
+
+        if ($base === null) {
+            $this->skip('Could not start the fake Cloudflare server');
+        }
+
+        $original = \App\Services\CdnCacheService::$apiBase;
+        \App\Services\CdnCacheService::$apiBase = $base;
+        $state = static fn (): array => json_decode((string) file_get_contents($root . '/state.json'), true);
+
+        try {
+            $this->withCdnSettings([
+                'cdn_cache_enabled'    => true,
+                'cloudflare_zone_id'   => 'abc123',
+                'cloudflare_api_token' => \App\Support\Crypto::encrypt('good-token'),
+            ], function () use ($root, $state): void {
+                $this->assertTrue(\App\Services\CdnCacheService::apiConfigured());
+                $this->assertTrue(\App\Services\CdnCacheService::testConnection()['ok']);
+
+                // No cache rules on the zone yet: the entrypoint is created.
+                $this->assertContains('Created', \App\Services\CdnCacheService::ensureCacheRule());
+                $rules = $state()['ruleset']['rules'];
+                $this->assertCount(1, $rules);
+                $this->assertContains(\App\Services\CdnCacheService::pathPrefix(), $rules[0]['expression']);
+                $this->assertTrue($rules[0]['action_parameters']['cache']);
+
+                // Running it again updates ours rather than adding a duplicate.
+                $this->assertContains('Updated', \App\Services\CdnCacheService::ensureCacheRule());
+                $this->assertCount(1, $state()['ruleset']['rules']);
+
+                // A zone with someone else's rules keeps them.
+                file_put_contents($root . '/state.json', json_encode([
+                    'ruleset' => ['id' => 'rs9', 'rules' => [['id' => 'theirs', 'ref' => 'other', 'expression' => 'true']]],
+                    'purged'  => [],
+                    'calls'   => [],
+                ]));
+                $this->assertContains('alongside', \App\Services\CdnCacheService::ensureCacheRule());
+                $rules = $state()['ruleset']['rules'];
+                $this->assertCount(2, $rules);
+                $this->assertSame('theirs', $rules[0]['id'], 'Existing rules must survive');
+                $this->assertNotContains('PUT', implode(' ', $state()['calls']), 'Must never replace the whole ruleset');
+
+                // Purges go out in batches Cloudflare accepts.
+                $urls = array_map(static fn (int $i): string => 'https://example.test/cdn/t/' . $i, range(1, 65));
+                \App\Services\CdnCacheService::purgeUrls($urls);
+                $this->assertCount(65, $state()['purged']);
+            });
+
+            // A bad token reports, it does not throw.
+            $this->withCdnSettings([
+                'cloudflare_zone_id'   => 'abc123',
+                'cloudflare_api_token' => \App\Support\Crypto::encrypt('wrong'),
+            ], function (): void {
+                $result = \App\Services\CdnCacheService::testConnection();
+                $this->assertFalse($result['ok']);
+                $this->assertContains('Invalid API Token', $result['message']);
+                \App\Services\CdnCacheService::purgeUrls(['https://example.test/x']); // logged, not thrown
+            });
+        } finally {
+            \App\Services\CdnCacheService::$apiBase = $original;
+        }
+    }
+
+    /**
+     * Through the real web server: a cacheable link answers with public
+     * caching headers and no cookie; once it gains a password it is bounced
+     * to the normal download, which asks for it.
+     */
+    public function testCdnDownloadOverHttp(): void
+    {
+        $userId = (int) \App\Core\Database::scalar('SELECT id FROM users ORDER BY id LIMIT 1');
+        $body = 'cdn body ' . Str::random(24);
+        $path = $userId . '/cd/n0/cdn-' . Str::random(8) . '.txt';
+        $fileId = 0;
+        $shareId = 0;
+
+        try {
+            StorageManager::disk('local')->putContents($path, $body);
+            $fileId = \App\Models\FileRecord::create([
+                'uuid' => Str::uuid(), 'user_id' => $userId, 'name' => 'cdn check.txt', 'original_name' => 'cdn check.txt',
+                'mime' => 'text/plain', 'extension' => 'txt',
+                'size' => strlen($body), 'checksum' => hash('sha256', $body), 'disk' => 'local', 'storage_path' => $path,
+            ]);
+            $share = \App\Services\ShareService::createForFile($userId, $fileId);
+            $shareId = (int) $share['id'];
+            $file = \App\Models\FileRecord::find($fileId);
+
+            $this->withCdnSettings(['cdn_cache_enabled' => true, 'cdn_cache_days' => 30], function () use ($share, $file, $body, $userId, $shareId): void {
+                $url = \App\Services\CdnCacheService::url($share, $file);
+                $url = Runner::baseUrl() . substr($url, strpos($url, '/cdn/'));
+
+                $response = $this->rawGet($url);
+                $this->assertSame(200, $response['status'], 'The CDN link should download');
+                $this->assertSame($body, $response['body']);
+                $this->assertContains('public', $response['headers']['cache-control'] ?? '');
+                $this->assertContains('max-age=2592000', $response['headers']['cache-control'] ?? '');
+                $this->assertFalse(isset($response['headers']['set-cookie']), 'A cached response must not set a cookie');
+
+                // Lock it with a password: the CDN URL must stop serving bytes.
+                \App\Services\ShareService::update($userId, $shareId, ['password' => 'secret1']);
+                $locked = $this->rawGet($url);
+                $this->assertSame(302, $locked['status']);
+                $this->assertContains('/s/', $locked['headers']['location'] ?? '');
+                $this->assertContains('no-store', $locked['headers']['cache-control'] ?? '');
+            });
+        } finally {
+            if ($shareId > 0) {
+                \App\Models\Share::deleteById($shareId);
+            }
+            if ($fileId > 0) {
+                \App\Models\FileRecord::deleteById($fileId);
+            }
+            StorageManager::disk('local')->delete($path);
+        }
+    }
+
+    /** @return array{status:int, body:string, headers:array<string,string>} */
+    private function rawGet(string $url): array
+    {
+        $headers = [];
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_TIMEOUT        => 20,
+            CURLOPT_HEADERFUNCTION => static function ($ch, string $line) use (&$headers): int {
+                if (str_contains($line, ':')) {
+                    [$name, $value] = explode(':', $line, 2);
+                    $headers[strtolower(trim($name))] = trim($value);
+                }
+
+                return strlen($line);
+            },
+        ]);
+        $body = (string) curl_exec($ch);
+        $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        return ['status' => $status, 'body' => $body, 'headers' => $headers];
     }
 
     public function testUnknownBackendSlugFailsLoudly(): void

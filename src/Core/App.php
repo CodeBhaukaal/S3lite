@@ -137,7 +137,11 @@ final class App
     public function handle(Request $request): Response
     {
         try {
-            if (!$request->isApi()) {
+            // CDN downloads must never set a cookie, or Cloudflare refuses to
+            // cache them (and would hand one visitor's session to the next).
+            if (str_starts_with($request->path, '/cdn/')) {
+                Session::disable();
+            } elseif (!$request->isApi()) {
                 Session::start();
             }
 

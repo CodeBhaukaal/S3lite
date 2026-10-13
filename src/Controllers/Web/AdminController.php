@@ -581,6 +581,14 @@ final class AdminController extends Controller
             'backends'    => $backends,
             'usage'       => StorageBackendService::usageBySlug(),
             'replicas'    => \App\Services\ReplicationService::statusBySlug(),
+            'cdn'         => [
+                'enabled'   => \App\Services\CdnCacheService::enabled(),
+                'days'      => \App\Services\CdnCacheService::days(),
+                'min_days'  => \App\Services\CdnCacheService::minLifetimeDays(),
+                'zone_id'   => \App\Services\CdnCacheService::zoneId(),
+                'has_token' => \App\Services\CdnCacheService::apiToken() !== '',
+                'prefix'    => \App\Services\CdnCacheService::pathPrefix(),
+            ],
             'drivers'     => \App\Models\StorageBackend::DRIVERS,
             'defaultSlug' => \App\Storage\StorageManager::defaultSlug(),
             'capabilities' => [
@@ -669,6 +677,33 @@ final class AdminController extends Controller
             $backend['slug'],
             $target
         ));
+    }
+
+    public function saveCdn(Request $request): Response
+    {
+        \App\Services\CdnCacheService::saveSettings($request->all());
+
+        return $this->back($request, 'success', 'Caching settings saved.');
+    }
+
+    public function testCdn(Request $request): Response
+    {
+        $result = \App\Services\CdnCacheService::testConnection();
+
+        return $this->back($request, $result['ok'] ? 'success' : 'error', $result['message']);
+    }
+
+    public function cdnRule(Request $request): Response
+    {
+        try {
+            $message = \App\Services\CdnCacheService::ensureCacheRule();
+        } catch (\Throwable $e) {
+            return $this->back($request, 'error', 'Could not create the cache rule: ' . $e->getMessage());
+        }
+
+        \App\Services\AuditService::log('cdn.rule', 'settings', null, $message);
+
+        return $this->back($request, 'success', $message);
     }
 
     /** Step 1 of linking Google Drive: send the admin to Google's consent screen. */

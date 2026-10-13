@@ -9,6 +9,16 @@ use App\Support\Str;
 final class Session
 {
     private static bool $started = false;
+    private static bool $disabled = false;
+
+    /**
+     * Keep this request cookie-free: anything that touches the session gets
+     * an empty scratch array instead of starting a real one.
+     */
+    public static function disable(): void
+    {
+        self::$disabled = true;
+    }
 
     public static function start(): void
     {
@@ -19,8 +29,9 @@ final class Session
         }
 
         // Console commands have no session; $_SESSION acts as a scratch array so
-        // shared services (auditing, flash helpers) work unchanged.
-        if (PHP_SAPI === 'cli' || headers_sent()) {
+        // shared services (auditing, flash helpers) work unchanged. The same
+        // goes for requests that must stay cookie-free (CDN downloads).
+        if (PHP_SAPI === 'cli' || headers_sent() || self::$disabled) {
             self::$started = true;
             $_SESSION ??= [];
 

@@ -245,6 +245,9 @@ final class FileService
 
         ReplicationService::queue($disk->name(), $newPath);
 
+        // Same share URL, new bytes: Cloudflare must not keep the old ones.
+        CdnCacheService::purgeFile($file);
+
         if ($oldPath !== $newPath && $oldPath !== $archivePath) {
             ReplicationService::deleteEverywhere($disk->name(), $oldPath);
         }
@@ -324,6 +327,7 @@ final class FileService
         }
 
         ReplicationService::queue($disk->name(), $restoredPath);
+        CdnCacheService::purgeFile($file);
 
         FileRecord::updateById($fileId, [
             'storage_path' => $restoredPath,
@@ -361,6 +365,8 @@ final class FileService
 
         $unique = self::uniqueName($userId, $file['folder_id'] === null ? null : (int) $file['folder_id'], $name, $fileId);
 
+        // The name is part of the cached URL; drop the old one.
+        CdnCacheService::purgeFile($file);
         FileRecord::updateById($fileId, ['name' => $unique]);
 
         AuditService::log('file.rename', 'file', $fileId, "Renamed {$file['name']} to {$unique}");
@@ -381,6 +387,8 @@ final class FileService
 
         $name = self::uniqueName($userId, $folderId, (string) $file['name'], $fileId);
 
+        // Leaving a shared folder must stop the folder link serving it.
+        CdnCacheService::purgeFile($file);
         FileRecord::updateById($fileId, ['folder_id' => $folderId, 'name' => $name]);
 
         AuditService::log('file.move', 'file', $fileId, "Moved {$file['name']}", ['folder_id' => $folderId]);
@@ -435,6 +443,7 @@ final class FileService
     {
         $file = self::ownedOrFail($userId, $fileId);
 
+        CdnCacheService::purgeFile($file);
         FileRecord::softDelete($fileId);
         Database::statement('UPDATE shares SET is_active = 0 WHERE file_id = ?', [$fileId]);
 
@@ -490,6 +499,9 @@ final class FileService
         }
 
         $freed = (int) $file['size'];
+
+        // Before the row goes: its shares cascade away with it.
+        CdnCacheService::purgeFile($file);
 
         foreach (FileVersion::forFile($fileId) as $version) {
             ReplicationService::deleteEverywhere(

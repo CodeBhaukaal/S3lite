@@ -255,6 +255,94 @@ View::startSection('content');
     </div>
 </div>
 
+<?php /** @var array{enabled:bool, days:int, min_days:int, zone_id:string, has_token:bool, prefix:string} $cdn */ ?>
+<div class="card mt-4">
+    <div class="card__head">
+        <?= icon('zap') ?><h2>Cloudflare caching</h2>
+        <?php if ($cdn['enabled']): ?><span class="badge badge-success">on</span><?php else: ?><span class="badge">off</span><?php endif; ?>
+    </div>
+    <div class="card__body">
+        <p class="muted small">
+            Public share links get a direct download address under <span class="mono"><?= e($cdn['prefix']) ?></span>
+            that Cloudflare is allowed to cache, so repeat downloads are served from Cloudflare instead of this server.
+            Only links with no password and no download limit qualify, and only if they never expire or have at least the
+            minimum lifetime left. A copy is never kept past the link's expiry.
+        </p>
+
+        <form method="post" action="<?= e(url('/admin/storage/cdn')) ?>">
+            <?= csrf_field() ?>
+            <div class="form-row">
+                <label class="check">
+                    <input type="hidden" name="cdn_cache_enabled" value="0">
+                    <input type="checkbox" name="cdn_cache_enabled" value="1" <?= $cdn['enabled'] ? 'checked' : '' ?>> Let Cloudflare cache public downloads
+                </label>
+            </div>
+            <div class="form-row">
+                <div class="field">
+                    <label class="label">Keep cached for (days)</label>
+                    <input class="input" name="cdn_cache_days" type="number" min="1" max="365" value="<?= e((string) $cdn['days']) ?>">
+                </div>
+                <div class="field">
+                    <label class="label">Only cache links with at least this many days left</label>
+                    <input class="input" name="cdn_min_lifetime_days" type="number" min="0" max="365" value="<?= e((string) $cdn['min_days']) ?>">
+                </div>
+            </div>
+
+            <h3 class="mt-2">Cloudflare API (optional)</h3>
+            <p class="faint small">
+                With an API token the panel creates the cache rule for you and clears Cloudflare's copy as soon as a link
+                is revoked, a password is added, or the file is replaced, renamed or deleted. Without one, cached copies
+                expire on their own. The token needs <strong>Zone → Cache Rules: Edit</strong> and
+                <strong>Zone → Cache Purge: Purge</strong> on this zone.
+            </p>
+            <div class="form-row">
+                <div class="field">
+                    <label class="label">Zone ID</label>
+                    <input class="input mono" name="cloudflare_zone_id" value="<?= e($cdn['zone_id']) ?>" placeholder="32-character ID from the zone's Overview page">
+                </div>
+                <div class="field">
+                    <label class="label">API token</label>
+                    <input class="input" name="cloudflare_api_token" type="password" autocomplete="new-password"
+                           placeholder="<?= $cdn['has_token'] ? 'saved — leave blank to keep' : '' ?>">
+                </div>
+            </div>
+            <?php if ($cdn['has_token']): ?>
+                <label class="check small">
+                    <input type="checkbox" name="forget_api_token" value="1"> Remove the saved token
+                </label>
+            <?php endif; ?>
+
+            <div class="form-row mt-2">
+                <button class="btn btn-primary" type="submit"><?= icon('save') ?> Save caching settings</button>
+            </div>
+        </form>
+
+        <?php if ($cdn['zone_id'] !== '' && $cdn['has_token']): ?>
+            <div class="form-row mt-2">
+                <form method="post" action="<?= e(url('/admin/storage/cdn/test')) ?>">
+                    <?= csrf_field() ?>
+                    <button class="btn" type="submit"><?= icon('activity') ?> Test Cloudflare</button>
+                </form>
+                <form method="post" action="<?= e(url('/admin/storage/cdn/rule')) ?>">
+                    <?= csrf_field() ?>
+                    <button class="btn" type="submit"><?= icon('zap') ?> Create cache rule in Cloudflare</button>
+                </form>
+            </div>
+        <?php endif; ?>
+
+        <details class="mt-2">
+            <summary class="small">Setting the cache rule up by hand instead</summary>
+            <ol class="small muted">
+                <li>Cloudflare dashboard → your site → <strong>Caching → Cache Rules → Create rule</strong>.</li>
+                <li>When incoming requests match: <strong>URI Path</strong> <em>starts with</em> <span class="mono"><?= e($cdn['prefix']) ?></span></li>
+                <li>Cache eligibility: <strong>Eligible for cache</strong>.</li>
+                <li>Edge TTL: <strong>Use cache-control header if present</strong>. Browser TTL: <strong>Respect origin</strong>.</li>
+                <li>Deploy. The site sends the right lifetime for each link, so one rule covers every download.</li>
+            </ol>
+        </details>
+    </div>
+</div>
+
 <div class="modal-backdrop hidden" id="modal-storage-new">
     <div class="modal">
         <form method="post" action="<?= e(url('/admin/storage')) ?>" data-storage-form>
