@@ -148,6 +148,7 @@ final class FileService
         ]);
 
         QuotaService::consume($userId, $size);
+        ReplicationService::queue($disk->name(), $storagePath);
 
         Database::insert('uploads', [
             'user_id'     => $userId,
@@ -220,6 +221,8 @@ final class FileService
                 'note'         => $note !== '' ? $note : null,
                 'created_at'   => date('Y-m-d H:i:s'),
             ]);
+
+            ReplicationService::queue($disk->name(), $archivePath);
         }
 
         $newPath = StorageManager::buildPath($userId, $checksum, strtolower(pathinfo($originalName, PATHINFO_EXTENSION)));
@@ -240,8 +243,13 @@ final class FileService
             'scan_result'  => $scan['result'],
         ]);
 
+        ReplicationService::queue($disk->name(), $newPath);
+
+        // Same share URL, new bytes: Cloudflare must not keep the old ones.
+        CdnCacheService::purgeFile($file);
+
         if ($oldPath !== $newPath && $oldPath !== $archivePath) {
-            $disk->delete($oldPath);
+            ReplicationService::deleteEverywhere($disk->name(), $oldPath);
         }
 
         QuotaService::consume($userId, $size);
@@ -249,8 +257,10 @@ final class FileService
         // Retention: drop the oldest versions past the configured limit.
         $keep = (int) SettingService::get('versions_kept', Config::get('storage.versions_kept', 10));
         foreach (FileVersion::prune($fileId, $keep) as $pruned) {
-            StorageManager::disk((string) ($pruned['disk'] ?: $disk->name()))
-                ->delete((string) $pruned['storage_path']);
+            ReplicationService::deleteEverywhere(
+                (string) ($pruned['disk'] ?: $disk->name()),
+                (string) $pruned['storage_path']
+            );
             QuotaService::release($userId, (int) $pruned['size']);
         }
 
@@ -299,17 +309,25 @@ final class FileService
                 'note'         => 'Auto-saved before restore',
                 'created_at'   => date('Y-m-d H:i:s'),
             ]);
+
+            ReplicationService::queue($disk->name(), $archivePath);
         }
 
         $restoredPath = StorageManager::buildPath($userId, (string) $target['checksum'], (string) $file['extension']);
 
         // The archived version may predate a backend migration, so read it
         // from wherever it actually lives.
-        $versionDisk = StorageManager::disk((string) ($target['disk'] ?: $file['disk']));
+        $versionDisk = ReplicationService::readableDisk(
+            (string) ($target['disk'] ?: $file['disk']),
+            (string) $target['storage_path']
+        );
 
         if (!StorageManager::copyAcross($versionDisk, (string) $target['storage_path'], $disk, $restoredPath)) {
             throw new HttpException(500, 'Unable to restore that version.', 'restore_failed');
         }
+
+        ReplicationService::queue($disk->name(), $restoredPath);
+        CdnCacheService::purgeFile($file);
 
         FileRecord::updateById($fileId, [
             'storage_path' => $restoredPath,
@@ -347,6 +365,8 @@ final class FileService
 
         $unique = self::uniqueName($userId, $file['folder_id'] === null ? null : (int) $file['folder_id'], $name, $fileId);
 
+        // The name is part of the cached URL; drop the old one.
+        CdnCacheService::purgeFile($file);
         FileRecord::updateById($fileId, ['name' => $unique]);
 
         AuditService::log('file.rename', 'file', $fileId, "Renamed {$file['name']} to {$unique}");
@@ -367,6 +387,8 @@ final class FileService
 
         $name = self::uniqueName($userId, $folderId, (string) $file['name'], $fileId);
 
+        // Leaving a shared folder must stop the folder link serving it.
+        CdnCacheService::purgeFile($file);
         FileRecord::updateById($fileId, ['folder_id' => $folderId, 'name' => $name]);
 
         AuditService::log('file.move', 'file', $fileId, "Moved {$file['name']}", ['folder_id' => $folderId]);
@@ -409,6 +431,7 @@ final class FileService
         ]);
 
         QuotaService::consume($userId, (int) $file['size']);
+        ReplicationService::queue($disk->name(), $newPath);
 
         AuditService::log('file.copy', 'file', $newId, "Copied {$file['name']} to {$name}");
 
@@ -420,6 +443,7 @@ final class FileService
     {
         $file = self::ownedOrFail($userId, $fileId);
 
+        CdnCacheService::purgeFile($file);
         FileRecord::softDelete($fileId);
         Database::statement('UPDATE shares SET is_active = 0 WHERE file_id = ?', [$fileId]);
 
@@ -474,12 +498,16 @@ final class FileService
             throw new HttpException(404, 'File not found.', 'file_not_found');
         }
 
-        $disk = StorageManager::disk((string) $file['disk']);
         $freed = (int) $file['size'];
 
+        // Before the row goes: its shares cascade away with it.
+        CdnCacheService::purgeFile($file);
+
         foreach (FileVersion::forFile($fileId) as $version) {
-            StorageManager::disk((string) ($version['disk'] ?: $file['disk']))
-                ->delete((string) $version['storage_path']);
+            ReplicationService::deleteEverywhere(
+                (string) ($version['disk'] ?: $file['disk']),
+                (string) $version['storage_path']
+            );
             $freed += (int) $version['size'];
         }
 
@@ -489,8 +517,10 @@ final class FileService
             [$file['storage_path'], $file['disk'], $fileId]
         );
 
+        // deleteEverywhere tolerates a dead primary, so purging still works
+        // (and clears the backups) while that FTP server is down.
         if ($shared === 0) {
-            $disk->delete((string) $file['storage_path']);
+            ReplicationService::deleteEverywhere((string) $file['disk'], (string) $file['storage_path']);
         }
 
         FileRecord::deleteById($fileId);

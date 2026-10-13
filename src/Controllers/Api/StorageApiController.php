@@ -36,6 +36,7 @@ final class StorageApiController extends Controller
                 'ftp'  => extension_loaded('ftp'),
                 'ftps' => extension_loaded('ftp') && function_exists('ftp_ssl_connect'),
                 'sftp' => SftpDriver::isSupported(),
+                'gdrive' => extension_loaded('curl'),
             ],
         ]);
     }

@@ -44,6 +44,10 @@ final class StorageBackendService
 
         $backend = StorageBackend::find($id) ?? [];
 
+        if ($data['replica_priority'] !== null && $data['is_active']) {
+            ReplicationService::backfill($data['slug']);
+        }
+
         AuditService::log('storage.backend_create', 'storage', $id, 'Added storage backend ' . $data['name'], [
             'driver' => $data['driver'],
             'slug'   => $data['slug'],
@@ -60,6 +64,22 @@ final class StorageBackendService
         $data = self::normalise($input, (string) $backend['driver']);
         unset($data['driver']);
 
+        // Drive details the form does not show (account, an auto-created
+        // folder) survive an edit that leaves them blank.
+        if ($backend['driver'] === 'gdrive') {
+            $old = is_array($backend['options'] ?? null) ? $backend['options'] : [];
+            foreach (['account', 'folder_id', 'client_id'] as $key) {
+                if (($data['options'][$key] ?? '') === '' && ($old[$key] ?? '') !== '') {
+                    $data['options'][$key] = $old[$key];
+                }
+            }
+        }
+
+        // A partial API update that does not mention the layer leaves it alone.
+        if (!array_key_exists('replica_priority', $input)) {
+            $data['replica_priority'] = $backend['replica_priority'] === null ? null : (int) $backend['replica_priority'];
+        }
+
         $data['secret'] = StorageBackend::mergeCredentials($backend, self::secretsFrom($input));
 
         StorageBackend::updateById($id, $data);
@@ -69,6 +89,14 @@ final class StorageBackendService
         }
 
         StorageManager::reset();
+
+        // Becoming a layer (or being switched back on as one) backs up the
+        // files that were uploaded before it existed.
+        $wasLayer = $backend['replica_priority'] !== null && (bool) $backend['is_active'];
+
+        if (!$wasLayer && $data['replica_priority'] !== null && $data['is_active']) {
+            ReplicationService::backfill((string) $backend['slug']);
+        }
 
         AuditService::log('storage.backend_update', 'storage', $id, 'Updated storage backend ' . $backend['name']);
 
@@ -109,6 +137,9 @@ final class StorageBackendService
                 'backend_in_use'
             );
         }
+
+        // Backup copies are not primaries; dropping the layer just forgets them.
+        Database::statement('DELETE FROM file_replicas WHERE disk = ?', [$slug]);
 
         StorageBackend::deleteById($id);
         StorageManager::reset();
@@ -239,7 +270,8 @@ final class StorageBackendService
             throw new HttpException(422, 'Pick two different backends.', 'same_backend');
         }
 
-        $source = StorageManager::disk($fromSlug);
+        // The source is not opened up front: when it is the server that went
+        // down, each object is read from a backup layer instead.
         $target = StorageManager::disk($toSlug);
 
         $limit = max(1, min(1000, $limit));
@@ -263,8 +295,15 @@ final class StorageBackendService
             $path = (string) $row['storage_path'];
 
             try {
-                if (!self::transfer($source, $target, $path)) {
-                    throw new \RuntimeException('copy failed');
+                // When the target is a backup layer that already holds the
+                // object, nothing needs reading — which matters most exactly
+                // when the source is the backend that died.
+                if (!$target->exists($path)) {
+                    $source = ReplicationService::readableDisk($fromSlug, $path, $toSlug);
+
+                    if (!self::transfer($source, $target, $path)) {
+                        throw new \RuntimeException('copy failed');
+                    }
                 }
 
                 Database::statement(
@@ -273,8 +312,16 @@ final class StorageBackendService
                 );
 
                 // Only unlink once nothing left on the source still points here.
+                // A dead source cannot be cleaned up; that must not fail the move.
                 if (!self::stillReferenced($fromSlug, $path)) {
-                    $source->delete($path);
+                    try {
+                        StorageManager::disk($fromSlug)->delete($path);
+                    } catch (Throwable $e) {
+                        Logger::warning('Migrated, but could not remove the source copy: ' . $e->getMessage(), [
+                            'disk' => $fromSlug,
+                            'path' => $path,
+                        ]);
+                    }
                 }
 
                 $moved++;
@@ -306,7 +353,7 @@ final class StorageBackendService
     }
 
     /** Stream one object across, verifying the byte count on arrival. */
-    private static function transfer(StorageDriver $source, StorageDriver $target, string $path): bool
+    public static function transfer(StorageDriver $source, StorageDriver $target, string $path): bool
     {
         if ($target->exists($path)) {
             return true; // A previous pass already copied it.
@@ -453,6 +500,11 @@ final class StorageBackendService
         $secrets = [];
 
         foreach (StorageBackend::SECRET_FIELDS as $field) {
+            // Only the OAuth callback gets to set a Drive refresh token.
+            if ($field === 'refresh_token') {
+                continue;
+            }
+
             if (array_key_exists($field, $input)) {
                 $secrets[$field] = $input[$field] === null ? null : (string) $input[$field];
             }
@@ -502,6 +554,10 @@ final class StorageBackendService
             throw new HttpException(422, 'S3 backends need an endpoint and a bucket.', 'invalid_s3_config');
         }
 
+        if ($driver === 'gdrive' && ($options['client_id'] ?? '') === '' && !GoogleDriveService::configured()) {
+            throw new HttpException(422, 'Google Drive needs the OAuth client ID from your Google Cloud project.', 'invalid_gdrive_config');
+        }
+
         return [
             'name'      => mb_substr($name, 0, 100),
             'driver'    => $driver,
@@ -512,6 +568,10 @@ final class StorageBackendService
             'root_path' => rtrim(trim(str_replace('\\', '/', (string) ($input['root_path'] ?? ''))), '/'),
             'options'   => $options,
             'is_active' => !array_key_exists('is_active', $input) || (bool) $input['is_active'],
+            // Blank or 0 = not a backup layer; 1 is tried first.
+            'replica_priority' => (int) ($input['replica_priority'] ?? 0) > 0
+                ? min(99, (int) $input['replica_priority'])
+                : null,
         ];
     }
 
@@ -540,6 +600,14 @@ final class StorageBackendService
             $options['region'] = trim((string) ($input['region'] ?? '')) ?: 'us-east-1';
             $options['bucket'] = trim((string) ($input['bucket'] ?? ''));
             $options['access_key'] = trim((string) ($input['access_key'] ?? ''));
+        }
+
+        if ($driver === 'gdrive') {
+            $options['client_id'] = trim((string) ($input['client_id'] ?? ''));
+            // Keep the connected account's label across edits.
+            $options['account'] = trim((string) ($input['account'] ?? ''));
+            // Blank = an "S3 Lite storage" folder is created on first use.
+            $options['folder_id'] = trim((string) ($input['folder_id'] ?? ''));
         }
 
         return $options;

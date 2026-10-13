@@ -580,6 +580,21 @@ final class AdminController extends Controller
         return $this->view('admin.storage', [
             'backends'    => $backends,
             'usage'       => StorageBackendService::usageBySlug(),
+            'replicas'    => \App\Services\ReplicationService::statusBySlug(),
+            'google'      => [
+                'configured'   => \App\Services\GoogleDriveService::configured(),
+                'from_env'     => \App\Services\GoogleDriveService::fromEnv(),
+                'client_id'    => \App\Services\GoogleDriveService::clientId(),
+                'redirect_uri' => \App\Services\GoogleDriveService::redirectUri(),
+            ],
+            'cdn'         => [
+                'enabled'   => \App\Services\CdnCacheService::enabled(),
+                'days'      => \App\Services\CdnCacheService::days(),
+                'min_days'  => \App\Services\CdnCacheService::minLifetimeDays(),
+                'zone_id'   => \App\Services\CdnCacheService::zoneId(),
+                'has_token' => \App\Services\CdnCacheService::apiToken() !== '',
+                'prefix'    => \App\Services\CdnCacheService::pathPrefix(),
+            ],
             'drivers'     => \App\Models\StorageBackend::DRIVERS,
             'defaultSlug' => \App\Storage\StorageManager::defaultSlug(),
             'capabilities' => [
@@ -591,6 +606,11 @@ final class AdminController extends Controller
 
     public function storeBackend(Request $request): Response
     {
+        // Drive is linked by signing in, not by filling a form.
+        if ($request->string('driver') === 'gdrive') {
+            return $this->redirect('/admin/storage/google/start' . ($request->int('replica_priority') > 0 ? '?layer=1' : ''));
+        }
+
         $backend = StorageBackendService::create($this->backendInput($request));
 
         // Tell the admin straight away whether the credentials actually work.
@@ -663,6 +683,104 @@ final class AdminController extends Controller
             $backend['slug'],
             $target
         ));
+    }
+
+    public function saveCdn(Request $request): Response
+    {
+        \App\Services\CdnCacheService::saveSettings($request->all());
+
+        return $this->back($request, 'success', 'Caching settings saved.');
+    }
+
+    public function testCdn(Request $request): Response
+    {
+        $result = \App\Services\CdnCacheService::testConnection();
+
+        return $this->back($request, $result['ok'] ? 'success' : 'error', $result['message']);
+    }
+
+    public function cdnRule(Request $request): Response
+    {
+        try {
+            $message = \App\Services\CdnCacheService::ensureCacheRule();
+        } catch (\Throwable $e) {
+            return $this->back($request, 'error', 'Could not create the cache rule: ' . $e->getMessage());
+        }
+
+        \App\Services\AuditService::log('cdn.rule', 'settings', null, $message);
+
+        return $this->back($request, 'success', $message);
+    }
+
+    /** One-time setup: the site's Google OAuth client. */
+    public function saveGoogleClient(Request $request): Response
+    {
+        \App\Services\GoogleDriveService::saveClient($request->string('google_client_id'), $request->string('google_client_secret'));
+
+        return $this->back($request, 'success', 'Google sign-in is set up. Click "Connect Google Drive" to link an account.');
+    }
+
+    /** Link a new Google Drive: straight to Google's account picker. */
+    public function googleStart(Request $request): Response
+    {
+        try {
+            return $this->redirect(\App\Services\GoogleDriveService::start(null, $request->bool('layer')));
+        } catch (\App\Http\Exceptions\HttpException $e) {
+            return $this->redirect('/admin/storage', 'error', $e->getMessage());
+        }
+    }
+
+    /** Re-link an existing Drive backend (expired or revoked access). */
+    public function googleConnect(Request $request, string $id): Response
+    {
+        $backend = \App\Models\StorageBackend::find((int) $id);
+
+        if ($backend === null || $backend['driver'] !== 'gdrive') {
+            return $this->redirect('/admin/storage', 'error', 'That is not a Google Drive backend.');
+        }
+
+        try {
+            return $this->redirect(\App\Services\GoogleDriveService::start((int) $backend['id']));
+        } catch (\App\Http\Exceptions\HttpException $e) {
+            return $this->redirect('/admin/storage', 'error', $e->getMessage());
+        }
+    }
+
+    /** Google sends the admin back here; the backend is created or reconnected. */
+    public function googleCallback(Request $request): Response
+    {
+        try {
+            $backend = \App\Services\GoogleDriveService::finish(
+                $request->string('state'),
+                $request->string('code'),
+                $request->string('error')
+            );
+        } catch (\Throwable $e) {
+            return $this->redirect('/admin/storage', 'error', 'Google Drive was not connected: ' . $e->getMessage());
+        }
+
+        $test = StorageBackendService::test((int) $backend['id']);
+
+        return $this->redirect(
+            '/admin/storage',
+            $test['ok'] ? 'success' : 'warning',
+            $test['ok']
+                ? $backend['name'] . ' is connected and working.'
+                : $backend['name'] . ' connected, but the test failed: ' . $test['message']
+        );
+    }
+
+    public function retryReplicas(Request $request, string $id): Response
+    {
+        $backend = \App\Models\StorageBackend::find((int) $id);
+
+        if ($backend === null) {
+            return $this->back($request, 'error', 'Backend not found.');
+        }
+
+        $count = \App\Services\ReplicationService::retryFailed((string) $backend['slug']);
+
+        return $this->back($request, 'success', sprintf('Re-queued %d backup cop%s.', $count, $count === 1 ? 'y' : 'ies'));
     }
 
     /** Shape a posted backend form into service input. */

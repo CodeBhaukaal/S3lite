@@ -825,6 +825,576 @@ final class UnitTest extends TestCase
         @unlink($marker);
     }
 
+    /**
+     * Upload lands on the primary, the queue copies it to the backup layer,
+     * and once the primary loses it (or the whole backend goes away) reads
+     * come from the backup instead. Deleting removes every copy.
+     */
+    public function testBackupLayerServesWhenPrimaryFails(): void
+    {
+        $base = rtrim(str_replace('\\', '/', sys_get_temp_dir()), '/') . '/replica-' . Str::random(6);
+        $primarySlug = 'suite-primary-' . strtolower(Str::random(6));
+        $layerSlug = 'suite-layer-' . strtolower(Str::random(6));
+        $userId = (int) \App\Core\Database::scalar('SELECT id FROM users ORDER BY id LIMIT 1');
+
+        if ($userId === 0) {
+            $this->skip('No user to own the test file');
+        }
+
+        // Created directly, not through the service, so no backfill copies
+        // the whole dev library into the temp layer.
+        $ids = [];
+        foreach ([[$primarySlug, null, '/a'], [$layerSlug, 1, '/b']] as [$slug, $priority, $dir]) {
+            $ids[] = \App\Models\StorageBackend::create([
+                'uuid' => Str::uuid(), 'name' => $slug, 'slug' => $slug, 'driver' => 'local',
+                'root_path' => $base . $dir, 'options' => [], 'is_active' => 1,
+                'replica_priority' => $priority, 'status' => 'ok',
+            ]);
+        }
+        StorageManager::reset();
+        \App\Services\ReplicationService::$onlyLayers = [$layerSlug];
+
+        $path = $userId . '/ab/cd/replica-' . Str::random(8) . '.bin';
+        $body = 'backed up ' . Str::random(32);
+        $fileId = 0;
+
+        try {
+            $this->assertTrue(StorageManager::disk($primarySlug)->putContents($path, $body));
+            $fileId = \App\Models\FileRecord::create([
+                'uuid' => Str::uuid(), 'user_id' => $userId, 'name' => 'replica.bin', 'original_name' => 'replica.bin',
+                'size' => strlen($body), 'checksum' => hash('sha256', $body), 'disk' => $primarySlug, 'storage_path' => $path,
+            ]);
+
+            \App\Services\ReplicationService::queue($primarySlug, $path);
+            $this->assertSame('pending', \App\Core\Database::scalar(
+                'SELECT status FROM file_replicas WHERE storage_path = ? AND disk = ?', [$path, $layerSlug]
+            ));
+
+            \App\Services\ReplicationService::run();
+            $this->assertSame('synced', \App\Core\Database::scalar(
+                'SELECT status FROM file_replicas WHERE storage_path = ? AND disk = ?', [$path, $layerSlug]
+            ));
+            $this->assertSame($body, StorageManager::disk($layerSlug)->get($path), 'The layer should hold a copy');
+
+            // Healthy primary: it is preferred.
+            $this->assertSame($primarySlug, \App\Services\ReplicationService::readableDisk($primarySlug, $path)->name());
+
+            // Primary lost the object: the backup answers.
+            StorageManager::disk($primarySlug)->delete($path);
+            $disk = \App\Services\ReplicationService::readableDisk($primarySlug, $path);
+            $this->assertSame($layerSlug, $disk->name());
+            $this->assertSame($body, $disk->get($path));
+
+            // Primary backend unreachable altogether: still served.
+            $this->assertSame($layerSlug, \App\Services\ReplicationService::readableDisk('suite-gone-' . Str::random(6), $path)->name());
+
+            // Migrating off the primary that lost it reads from the backup.
+            $result = \App\Services\StorageBackendService::migrate($primarySlug, 'local', 10);
+            $this->assertSame(1, $result['moved'], 'Migration should recover the file from the backup: ' . implode('; ', $result['errors']));
+            $this->assertSame($body, StorageManager::disk('local')->get($path));
+
+            // Delete clears every copy and the bookkeeping.
+            \App\Services\ReplicationService::deleteEverywhere('local', $path);
+            $this->assertFalse(StorageManager::disk($layerSlug)->exists($path));
+            $this->assertFalse(StorageManager::disk('local')->exists($path));
+            $this->assertSame(0, (int) \App\Core\Database::scalar('SELECT COUNT(*) FROM file_replicas WHERE storage_path = ?', [$path]));
+
+            $this->assertThrows(
+                \App\Http\Exceptions\HttpException::class,
+                static fn () => \App\Services\ReplicationService::readableDisk('local', $path)
+            );
+        } finally {
+            if ($fileId > 0) {
+                \App\Models\FileRecord::deleteById($fileId);
+            }
+            \App\Core\Database::statement('DELETE FROM file_replicas WHERE storage_path = ?', [$path]);
+            foreach ($ids as $id) {
+                \App\Models\StorageBackend::deleteById($id);
+            }
+            StorageManager::reset();
+            \App\Services\ReplicationService::$onlyLayers = [];
+        }
+    }
+
+    /** Start a tests/ router script under php -S on a free port; returns its base URL or null. */
+    private function startRouterServer(string $script, array $extraEnv): ?string
+    {
+        $port = random_int(25401, 26000);
+        $null = PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
+        $env = array_merge(getenv(), $extraEnv);
+
+        $process = @proc_open(
+            [PHP_BINARY, '-S', '127.0.0.1:' . $port, str_replace('\\', '/', dirname(__DIR__) . '/tests/' . $script)],
+            [['pipe', 'r'], ['file', $null, 'w'], ['file', $null, 'w']],
+            $pipes,
+            null,
+            $env,
+            ['bypass_shell' => true]
+        );
+
+        if (!is_resource($process)) {
+            return null;
+        }
+
+        self::$processes[] = $process;
+
+        for ($i = 0; $i < 40; $i++) {
+            usleep(100000);
+            $socket = @fsockopen('127.0.0.1', $port, $errno, $errstr, 0.2);
+            if ($socket !== false) {
+                fclose($socket);
+
+                return 'http://127.0.0.1:' . $port;
+            }
+        }
+
+        return null;
+    }
+
+    /** @return array<string, string> Driver options pointing at the fake server. */
+    private static function fakeGdriveOptions(string $base): array
+    {
+        return [
+            'api_base'    => $base . '/drive/v3',
+            'upload_base' => $base . '/upload/drive/v3',
+            'token_url'   => $base . '/token',
+            'timeout'     => 5,
+        ];
+    }
+
+    public function testGoogleDriveDriverRoundTrip(): void
+    {
+        $root = rtrim(str_replace('\\', '/', sys_get_temp_dir()), '/') . '/fake-gdrive-' . Str::random(6);
+        $base = $this->startRouterServer('fake-gdrive.php', ['FAKE_GDRIVE_ROOT' => $root]);
+
+        if ($base === null) {
+            $this->skip('Could not start the fake Google Drive server');
+        }
+
+        $driver = new \App\Storage\GoogleDriveDriver('suite-gdrive', 'client', 'secret', 'good-refresh', '', self::fakeGdriveOptions($base));
+
+        $this->assertSame('gdrive', $driver->driver());
+
+        // No folder given: one is created, and found again rather than duplicated.
+        $folder = $driver->folderId();
+        $this->assertNotEmpty($folder);
+        $again = new \App\Storage\GoogleDriveDriver('suite-gdrive', 'client', 'secret', 'good-refresh', '', self::fakeGdriveOptions($base));
+        $this->assertSame($folder, $again->folderId(), 'A second instance must reuse the folder');
+
+        $path = '7/ab/cd/it\'s a "file".bin';
+        $body = 'HEADER' . str_repeat('drive', 500);
+
+        $this->assertFalse($driver->exists($path));
+        $this->assertTrue($driver->putContents($path, $body));
+        $this->assertTrue($driver->exists($path));
+        $this->assertSame(strlen($body), $driver->size($path));
+        $this->assertSame($body, $again->get($path), 'A fresh instance finds it by name');
+
+        $stream = $driver->readStream($path, 6);
+        $this->assertNotNull($stream);
+        $this->assertSame(substr($body, 6), stream_get_contents($stream));
+        fclose($stream);
+
+        // Overwriting keeps one object under that name.
+        $this->assertTrue($driver->putContents($path, 'v2'));
+        $this->assertSame('v2', $again->get($path));
+        $state = json_decode((string) file_get_contents($root . '/state.json'), true);
+        $named = array_filter($state['files'], static fn (array $f): bool => $f['name'] === $path);
+        $this->assertCount(1, $named, 'An overwrite must not create a duplicate');
+
+        $this->assertTrue($driver->copy($path, '7/copy.bin'));
+        $this->assertSame('v2', $driver->get('7/copy.bin'));
+        $this->assertTrue($driver->move('7/copy.bin', '7/moved.bin'));
+        $this->assertFalse($driver->exists('7/copy.bin'));
+        $this->assertSame('v2', $driver->get('7/moved.bin'));
+
+        $this->assertTrue($driver->delete('7/moved.bin'));
+        $this->assertTrue($driver->delete('7/moved.bin'), 'Deleting twice is fine');
+        $this->assertNull($driver->readStream('7/moved.bin'));
+
+        $this->assertSame(1000000, $driver->diskUsage()['total']);
+
+        $this->assertThrows(\RuntimeException::class, static fn () => $driver->exists('../escape'));
+    }
+
+    public function testGoogleDriveOauthAndBadToken(): void
+    {
+        $root = rtrim(str_replace('\\', '/', sys_get_temp_dir()), '/') . '/fake-gdrive-' . Str::random(6);
+        $base = $this->startRouterServer('fake-gdrive.php', ['FAKE_GDRIVE_ROOT' => $root]);
+
+        if ($base === null) {
+            $this->skip('Could not start the fake Google Drive server');
+        }
+
+        $tokens = \App\Storage\GoogleDriveDriver::exchangeCode('client', 'secret', 'good-code', 'http://localhost/cb', $base . '/token');
+        $this->assertSame('good-refresh', $tokens['refresh_token']);
+
+        $error = $this->assertThrows(
+            \RuntimeException::class,
+            static fn () => \App\Storage\GoogleDriveDriver::exchangeCode('client', 'secret', 'bad-code', 'http://localhost/cb', $base . '/token')
+        );
+        $this->assertContains('Google refused', $error->getMessage());
+
+        $url = \App\Storage\GoogleDriveDriver::authorizationUrl('client', 'http://localhost/cb', 'st4te');
+        $this->assertContains('access_type=offline', $url);
+        $this->assertContains('state=st4te', $url);
+        $this->assertContains(rawurlencode(\App\Storage\GoogleDriveDriver::SCOPE), $url);
+
+        $revoked = new \App\Storage\GoogleDriveDriver('suite-gdrive', 'client', 'secret', 'revoked', 'f', self::fakeGdriveOptions($base));
+        $error = $this->assertThrows(\RuntimeException::class, static fn () => $revoked->exists('a.bin'));
+        $this->assertContains('connect Google Drive again', $error->getMessage());
+
+        $this->assertThrows(
+            \RuntimeException::class,
+            static fn () => new \App\Storage\GoogleDriveDriver('suite-gdrive', 'client', 'secret', '', '', [])
+        );
+    }
+
+    /**
+     * One-click linking: with the site's client saved once, signing in creates
+     * a working backend named after the account; a forged return is refused;
+     * reconnecting updates the same backend.
+     */
+    public function testConnectGoogleDriveInOneClick(): void
+    {
+        $root = rtrim(str_replace('\\', '/', sys_get_temp_dir()), '/') . '/fake-gdrive-' . Str::random(6);
+        $base = $this->startRouterServer('fake-gdrive.php', ['FAKE_GDRIVE_ROOT' => $root]);
+
+        if ($base === null) {
+            $this->skip('Could not start the fake Google Drive server');
+        }
+
+        $driver = \App\Storage\GoogleDriveDriver::class;
+        $saved = [$driver::$defaultTokenUrl, $driver::$defaultApiBase, $driver::$defaultUploadBase];
+        [$driver::$defaultTokenUrl, $driver::$defaultApiBase, $driver::$defaultUploadBase] = [$base . '/token', $base . '/drive/v3', $base . '/upload/drive/v3'];
+        $before = \App\Core\Database::select("SELECT * FROM settings WHERE key_name IN ('google_client_id', 'google_client_secret')");
+        $created = null;
+
+        try {
+            $this->assertThrows(
+                \App\Http\Exceptions\HttpException::class,
+                static fn () => \App\Services\GoogleDriveService::saveClient('not-a-client-id', 'x')
+            );
+
+            \App\Services\GoogleDriveService::saveClient('123-abc.apps.googleusercontent.com', 'site-secret');
+            $this->assertTrue(\App\Services\GoogleDriveService::configured());
+            $this->assertSame('site-secret', \App\Services\GoogleDriveService::clientSecret());
+            $this->assertNotContains('site-secret', (string) \App\Core\Database::scalar(
+                "SELECT value FROM settings WHERE key_name = 'google_client_secret'"
+            ), 'The secret must be stored encrypted');
+
+            $url = \App\Services\GoogleDriveService::start();
+            $this->assertContains('client_id=123-abc.apps.googleusercontent.com', $url);
+            parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+
+            $this->assertThrows(
+                \App\Http\Exceptions\HttpException::class,
+                static fn () => \App\Services\GoogleDriveService::finish('forged', 'good-code')
+            );
+
+            // The forged attempt used up the pending sign-in; start again.
+            $url = \App\Services\GoogleDriveService::start(null, true);
+            parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+            $created = \App\Services\GoogleDriveService::finish((string) $query['state'], 'good-code');
+
+            $this->assertSame('gdrive', $created['driver']);
+            $this->assertContains('owner@example.com', $created['name']);
+            $this->assertNotNull($created['replica_priority'], 'Asked for as a layer, so it is one');
+            $this->assertNotEmpty($created['options']['folder_id'], 'The folder is pinned at connect time');
+            $this->assertTrue(\App\Models\StorageBackend::publicArray($created)['is_connected']);
+            $this->assertTrue(\App\Services\StorageBackendService::test((int) $created['id'])['ok'], 'Works with only the site client');
+
+            // Reconnecting keeps the same backend.
+            $url = \App\Services\GoogleDriveService::start((int) $created['id']);
+            parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+            $again = \App\Services\GoogleDriveService::finish((string) $query['state'], 'good-code');
+            $this->assertSame((int) $created['id'], (int) $again['id']);
+        } finally {
+            [$driver::$defaultTokenUrl, $driver::$defaultApiBase, $driver::$defaultUploadBase] = $saved;
+            if ($created !== null) {
+                \App\Core\Database::statement('DELETE FROM file_replicas WHERE disk = ?', [$created['slug']]);
+                \App\Models\StorageBackend::deleteById((int) $created['id']);
+            }
+            \App\Core\Database::statement("DELETE FROM settings WHERE key_name IN ('google_client_id', 'google_client_secret')");
+            foreach ($before as $row) {
+                \App\Core\Database::insert('settings', $row);
+            }
+            \App\Services\SettingService::flush();
+            StorageManager::reset();
+        }
+    }
+
+    /** The case the feature exists for: FTP dies, Drive serves, then takes over. */
+    public function testGoogleDriveAsBackupLayer(): void
+    {
+        $root = rtrim(str_replace('\\', '/', sys_get_temp_dir()), '/') . '/fake-gdrive-' . Str::random(6);
+        $base = $this->startRouterServer('fake-gdrive.php', ['FAKE_GDRIVE_ROOT' => $root]);
+
+        if ($base === null) {
+            $this->skip('Could not start the fake Google Drive server');
+        }
+
+        $userId = (int) \App\Core\Database::scalar('SELECT id FROM users ORDER BY id LIMIT 1');
+        $primarySlug = 'suite-primary-' . strtolower(Str::random(6));
+        $driveSlug = 'suite-drive-' . strtolower(Str::random(6));
+        $temp = rtrim(str_replace('\\', '/', sys_get_temp_dir()), '/') . '/drive-primary-' . Str::random(6);
+
+        $ids = [
+            \App\Models\StorageBackend::create([
+                'uuid' => Str::uuid(), 'name' => $primarySlug, 'slug' => $primarySlug, 'driver' => 'local',
+                'root_path' => $temp, 'options' => [], 'is_active' => 1, 'status' => 'ok',
+            ]),
+            \App\Models\StorageBackend::create([
+                'uuid' => Str::uuid(), 'name' => $driveSlug, 'slug' => $driveSlug, 'driver' => 'gdrive',
+                'root_path' => '', 'options' => self::fakeGdriveOptions($base) + ['client_id' => 'client'],
+                'secret' => \App\Models\StorageBackend::mergeCredentials([], ['client_secret' => 'secret', 'refresh_token' => 'good-refresh']),
+                'is_active' => 1, 'replica_priority' => 1, 'status' => 'ok',
+            ]),
+        ];
+        StorageManager::reset();
+        \App\Services\ReplicationService::$onlyLayers = [$driveSlug];
+
+        $path = $userId . '/ef/01/drive-' . Str::random(8) . '.txt';
+        $body = 'safe in drive ' . Str::random(16);
+        $fileId = 0;
+
+        try {
+            $this->assertTrue(\App\Services\StorageBackendService::test($ids[1])['ok'], 'Connection test should pass');
+
+            StorageManager::disk($primarySlug)->putContents($path, $body);
+            $fileId = \App\Models\FileRecord::create([
+                'uuid' => Str::uuid(), 'user_id' => $userId, 'name' => 'd.txt', 'original_name' => 'd.txt',
+                'size' => strlen($body), 'checksum' => hash('sha256', $body), 'disk' => $primarySlug, 'storage_path' => $path,
+            ]);
+
+            \App\Services\ReplicationService::queue($primarySlug, $path);
+            $run = \App\Services\ReplicationService::run();
+            $this->assertSame(1, $run['synced'], 'The copy to Drive should succeed');
+
+            StorageManager::disk($primarySlug)->delete($path);
+            $disk = \App\Services\ReplicationService::readableDisk($primarySlug, $path);
+            $this->assertSame($driveSlug, $disk->name(), 'Drive should serve once the primary lost it');
+            $this->assertSame($body, $disk->get($path));
+
+            $result = \App\Services\StorageBackendService::migrate($primarySlug, $driveSlug, 10);
+            $this->assertSame(1, $result['moved'], implode('; ', $result['errors']));
+            $this->assertSame($driveSlug, \App\Core\Database::scalar('SELECT disk FROM files WHERE id = ?', [$fileId]));
+
+            \App\Services\ReplicationService::deleteEverywhere($driveSlug, $path);
+            $this->assertFalse(StorageManager::disk($driveSlug)->exists($path));
+        } finally {
+            if ($fileId > 0) {
+                \App\Models\FileRecord::deleteById($fileId);
+            }
+            \App\Core\Database::statement('DELETE FROM file_replicas WHERE storage_path = ?', [$path]);
+            foreach ($ids as $id) {
+                \App\Models\StorageBackend::deleteById($id);
+            }
+            StorageManager::reset();
+            \App\Services\ReplicationService::$onlyLayers = [];
+        }
+    }
+
+    /** Run $test with CDN settings applied, then remove them again. */
+    private function withCdnSettings(array $values, callable $test): void
+    {
+        $keys = ['cdn_cache_enabled', 'cdn_cache_days', 'cdn_min_lifetime_days', 'cloudflare_zone_id', 'cloudflare_api_token'];
+        $before = [];
+        foreach ($keys as $key) {
+            $before[$key] = \App\Core\Database::selectOne('SELECT * FROM settings WHERE key_name = ?', [$key]);
+        }
+
+        try {
+            \App\Services\SettingService::setMany($values, 'cdn');
+            $test();
+        } finally {
+            foreach ($before as $key => $row) {
+                \App\Core\Database::delete('settings', 'key_name = ?', [$key]);
+                if ($row !== null) {
+                    \App\Core\Database::insert('settings', $row);
+                }
+            }
+            \App\Services\SettingService::flush();
+        }
+    }
+
+    public function testCdnCachesOnlySafeLinks(): void
+    {
+        $now = 1_800_000_000;
+        $share = ['is_active' => 1, 'password_hash' => null, 'max_downloads' => null, 'expires_at' => null];
+        $in = static fn (int $days): string => date('Y-m-d H:i:s', $now + $days * 86400);
+
+        $this->withCdnSettings(['cdn_cache_enabled' => false], function () use ($share, $now): void {
+            $this->assertSame(0, \App\Services\CdnCacheService::ttlForShare($share, $now), 'Off means never cached');
+        });
+
+        $this->withCdnSettings(['cdn_cache_enabled' => true, 'cdn_cache_days' => 30, 'cdn_min_lifetime_days' => 7], function () use ($share, $now, $in): void {
+            $ttl = static fn (array $s): int => \App\Services\CdnCacheService::ttlForShare($s, $now);
+
+            $this->assertSame(30 * 86400, $ttl($share), 'A permanent link is cached for the configured days');
+            $this->assertSame(20 * 86400, $ttl(['expires_at' => $in(20)] + $share), 'Never past the expiry');
+            $this->assertSame(30 * 86400, $ttl(['expires_at' => $in(90)] + $share));
+            $this->assertSame(0, $ttl(['expires_at' => $in(3)] + $share), 'Under a week left: not cached');
+            $this->assertSame(0, $ttl(['password_hash' => 'x'] + $share), 'Password links would leak');
+            $this->assertSame(0, $ttl(['max_downloads' => 5] + $share), 'A limit cannot be enforced from a cache');
+            $this->assertSame(0, $ttl(['is_active' => 0] + $share));
+
+            $headers = \App\Services\CdnCacheService::headers(86400);
+            $this->assertContains('public', $headers['Cache-Control']);
+            $this->assertContains('s-maxage=86400', $headers['Cache-Control']);
+
+            $url = \App\Services\CdnCacheService::url(['token' => 'tok', 'file_id' => 1], ['name' => 'my file.zip', 'uuid' => 'u']);
+            $this->assertContains('/cdn/tok/my%20file.zip', $url);
+            $this->assertNotContains('?file=', $url);
+            $folderUrl = \App\Services\CdnCacheService::url(['token' => 'tok', 'file_id' => null], ['name' => 'a.pdf', 'uuid' => 'u-1']);
+            $this->assertContains('a.pdf?file=u-1', $folderUrl);
+        });
+    }
+
+    public function testCloudflareCacheRuleAndPurge(): void
+    {
+        $root = rtrim(str_replace('\\', '/', sys_get_temp_dir()), '/') . '/fake-cf-' . Str::random(6);
+        $base = $this->startRouterServer('fake-cloudflare.php', ['FAKE_CF_ROOT' => $root]);
+
+        if ($base === null) {
+            $this->skip('Could not start the fake Cloudflare server');
+        }
+
+        $original = \App\Services\CdnCacheService::$apiBase;
+        \App\Services\CdnCacheService::$apiBase = $base;
+        $state = static fn (): array => json_decode((string) file_get_contents($root . '/state.json'), true);
+
+        try {
+            $this->withCdnSettings([
+                'cdn_cache_enabled'    => true,
+                'cloudflare_zone_id'   => 'abc123',
+                'cloudflare_api_token' => \App\Support\Crypto::encrypt('good-token'),
+            ], function () use ($root, $state): void {
+                $this->assertTrue(\App\Services\CdnCacheService::apiConfigured());
+                $this->assertTrue(\App\Services\CdnCacheService::testConnection()['ok']);
+
+                // No cache rules on the zone yet: the entrypoint is created.
+                $this->assertContains('Created', \App\Services\CdnCacheService::ensureCacheRule());
+                $rules = $state()['ruleset']['rules'];
+                $this->assertCount(1, $rules);
+                $this->assertContains(\App\Services\CdnCacheService::pathPrefix(), $rules[0]['expression']);
+                $this->assertTrue($rules[0]['action_parameters']['cache']);
+
+                // Running it again updates ours rather than adding a duplicate.
+                $this->assertContains('Updated', \App\Services\CdnCacheService::ensureCacheRule());
+                $this->assertCount(1, $state()['ruleset']['rules']);
+
+                // A zone with someone else's rules keeps them.
+                file_put_contents($root . '/state.json', json_encode([
+                    'ruleset' => ['id' => 'rs9', 'rules' => [['id' => 'theirs', 'ref' => 'other', 'expression' => 'true']]],
+                    'purged'  => [],
+                    'calls'   => [],
+                ]));
+                $this->assertContains('alongside', \App\Services\CdnCacheService::ensureCacheRule());
+                $rules = $state()['ruleset']['rules'];
+                $this->assertCount(2, $rules);
+                $this->assertSame('theirs', $rules[0]['id'], 'Existing rules must survive');
+                $this->assertNotContains('PUT', implode(' ', $state()['calls']), 'Must never replace the whole ruleset');
+
+                // Purges go out in batches Cloudflare accepts.
+                $urls = array_map(static fn (int $i): string => 'https://example.test/cdn/t/' . $i, range(1, 65));
+                \App\Services\CdnCacheService::purgeUrls($urls);
+                $this->assertCount(65, $state()['purged']);
+            });
+
+            // A bad token reports, it does not throw.
+            $this->withCdnSettings([
+                'cloudflare_zone_id'   => 'abc123',
+                'cloudflare_api_token' => \App\Support\Crypto::encrypt('wrong'),
+            ], function (): void {
+                $result = \App\Services\CdnCacheService::testConnection();
+                $this->assertFalse($result['ok']);
+                $this->assertContains('Invalid API Token', $result['message']);
+                \App\Services\CdnCacheService::purgeUrls(['https://example.test/x']); // logged, not thrown
+            });
+        } finally {
+            \App\Services\CdnCacheService::$apiBase = $original;
+        }
+    }
+
+    /**
+     * Through the real web server: a cacheable link answers with public
+     * caching headers and no cookie; once it gains a password it is bounced
+     * to the normal download, which asks for it.
+     */
+    public function testCdnDownloadOverHttp(): void
+    {
+        $userId = (int) \App\Core\Database::scalar('SELECT id FROM users ORDER BY id LIMIT 1');
+        $body = 'cdn body ' . Str::random(24);
+        $path = $userId . '/cd/n0/cdn-' . Str::random(8) . '.txt';
+        $fileId = 0;
+        $shareId = 0;
+
+        try {
+            StorageManager::disk('local')->putContents($path, $body);
+            $fileId = \App\Models\FileRecord::create([
+                'uuid' => Str::uuid(), 'user_id' => $userId, 'name' => 'cdn check.txt', 'original_name' => 'cdn check.txt',
+                'mime' => 'text/plain', 'extension' => 'txt',
+                'size' => strlen($body), 'checksum' => hash('sha256', $body), 'disk' => 'local', 'storage_path' => $path,
+            ]);
+            $share = \App\Services\ShareService::createForFile($userId, $fileId);
+            $shareId = (int) $share['id'];
+            $file = \App\Models\FileRecord::find($fileId);
+
+            $this->withCdnSettings(['cdn_cache_enabled' => true, 'cdn_cache_days' => 30], function () use ($share, $file, $body, $userId, $shareId): void {
+                $url = \App\Services\CdnCacheService::url($share, $file);
+                $url = Runner::baseUrl() . substr($url, strpos($url, '/cdn/'));
+
+                $response = $this->rawGet($url);
+                $this->assertSame(200, $response['status'], 'The CDN link should download');
+                $this->assertSame($body, $response['body']);
+                $this->assertContains('public', $response['headers']['cache-control'] ?? '');
+                $this->assertContains('max-age=2592000', $response['headers']['cache-control'] ?? '');
+                $this->assertFalse(isset($response['headers']['set-cookie']), 'A cached response must not set a cookie');
+
+                // Lock it with a password: the CDN URL must stop serving bytes.
+                \App\Services\ShareService::update($userId, $shareId, ['password' => 'secret1']);
+                $locked = $this->rawGet($url);
+                $this->assertSame(302, $locked['status']);
+                $this->assertContains('/s/', $locked['headers']['location'] ?? '');
+                $this->assertContains('no-store', $locked['headers']['cache-control'] ?? '');
+            });
+        } finally {
+            if ($shareId > 0) {
+                \App\Models\Share::deleteById($shareId);
+            }
+            if ($fileId > 0) {
+                \App\Models\FileRecord::deleteById($fileId);
+            }
+            StorageManager::disk('local')->delete($path);
+        }
+    }
+
+    /** @return array{status:int, body:string, headers:array<string,string>} */
+    private function rawGet(string $url): array
+    {
+        $headers = [];
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_TIMEOUT        => 20,
+            CURLOPT_HEADERFUNCTION => static function ($ch, string $line) use (&$headers): int {
+                if (str_contains($line, ':')) {
+                    [$name, $value] = explode(':', $line, 2);
+                    $headers[strtolower(trim($name))] = trim($value);
+                }
+
+                return strlen($line);
+            },
+        ]);
+        $body = (string) curl_exec($ch);
+        $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        return ['status' => $status, 'body' => $body, 'headers' => $headers];
+    }
+
     public function testUnknownBackendSlugFailsLoudly(): void
     {
         $this->assertThrows(

@@ -126,6 +126,16 @@ final class StorageManager
                 (string) ($credentials['secret_key'] ?? ''),
                 $slug
             ),
+            'gdrive' => new GoogleDriveDriver(
+                $slug,
+                // Backends made by "Connect Google Drive" use the site's client;
+                // older ones may carry their own.
+                (string) (($options['client_id'] ?? '') ?: \App\Services\GoogleDriveService::clientId()),
+                (string) (($credentials['client_secret'] ?? '') ?: \App\Services\GoogleDriveService::clientSecret()),
+                (string) ($credentials['refresh_token'] ?? ''),
+                (string) ($options['folder_id'] ?? ''),
+                $options
+            ),
             default => throw new RuntimeException("Unknown storage driver: {$backend['driver']}"),
         };
     }

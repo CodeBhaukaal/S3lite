@@ -227,7 +227,7 @@ final class BackupService
             $versionPaths = array_flip(array_column(
                 Database::select('SELECT storage_path FROM file_versions WHERE disk = ?', [$slug]),
                 'storage_path'
-            ));
+            )) + ReplicationService::pathsOn($slug);
             $root = str_replace('\\', '/', $disk->root());
 
             $iterator = new \RecursiveIteratorIterator(
@@ -271,6 +271,9 @@ final class BackupService
                 Database::select('SELECT storage_path FROM file_versions WHERE disk = ?', [$slug]),
                 'storage_path'
             ));
+            // A local disk used as a backup layer holds copies no `files` row
+            // points at; they are not orphans.
+            $versions += ReplicationService::pathsOn($slug);
             $root = str_replace('\\', '/', $disk->root());
 
             $iterator = new \RecursiveIteratorIterator(

@@ -154,6 +154,10 @@ final class ShareService
 
         if ($data !== []) {
             Share::updateById($shareId, $data);
+
+            // A password, limit or earlier expiry must take effect now, not
+            // when Cloudflare's copy happens to age out.
+            CdnCacheService::purgeShare($share);
         }
 
         AuditService::log('share.update', 'share', $shareId, 'Updated share link', array_keys($data));
@@ -165,6 +169,7 @@ final class ShareService
     {
         $share = self::ownedOrFail($userId, $shareId);
 
+        CdnCacheService::purgeShare($share);
         Share::deleteById($shareId);
 
         if ($share['file_id'] !== null) {
@@ -188,6 +193,8 @@ final class ShareService
         if ($file === null || (int) $file['user_id'] !== $userId) {
             throw new HttpException(404, 'File not found.', 'file_not_found');
         }
+
+        CdnCacheService::purgeFile($file);
 
         $count = Database::delete('shares', 'file_id = ? AND user_id = ?', [$fileId, $userId]);
         FileRecord::updateById($fileId, ['is_public' => 0]);
@@ -253,5 +260,17 @@ final class ShareService
         return Database::statement(
             'DELETE FROM shares WHERE expires_at IS NOT NULL AND expires_at < DATE_SUB(NOW(), INTERVAL 7 DAY)'
         );
+    }
+
+    /** Someone else's share is reported as missing, not forbidden. */
+    private static function ownedOrFail(int $userId, int $shareId): array
+    {
+        $share = Share::find($shareId);
+
+        if ($share === null || (int) $share['user_id'] !== $userId) {
+            throw new HttpException(404, 'Share not found.', 'share_not_found');
+        }
+
+        return $share;
     }
 }

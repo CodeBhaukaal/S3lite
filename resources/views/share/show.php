@@ -17,6 +17,13 @@ $allowPreview = (int) $share['allow_preview'] === 1;
 $previewUrl = url('/s/' . $share['token'] . '/preview');
 $downloadUrl = url('/s/' . $share['token'] . '/download');
 
+// Links Cloudflare may cache download through /cdn/..., so repeat downloads
+// never reach this server.
+$cacheable = \App\Services\CdnCacheService::ttlForShare($share) > 0;
+$fileDownloadUrl = static fn (array $item): string => $cacheable
+    ? \App\Services\CdnCacheService::url($share, $item)
+    : $downloadUrl . ($share['file_id'] === null ? '?file=' . $item['uuid'] : '');
+
 View::startSection('content');
 ?>
 <?php if ($file !== null): ?>
@@ -46,7 +53,7 @@ View::startSection('content');
                     </div>
                 </div>
 
-                <a class="btn btn-primary btn-lg" href="<?= e($downloadUrl) ?>">
+                <a class="btn btn-primary btn-lg" href="<?= e($fileDownloadUrl($file)) ?>">
                     <?= icon('download') ?> Download
                 </a>
             </div>
@@ -116,7 +123,7 @@ View::startSection('content');
                                 <td class="nowrap tabular"><?= e(bytes((int) $item['size'])) ?></td>
                                 <td class="nowrap faint"><?= e(time_ago($item['updated_at'])) ?></td>
                                 <td class="right">
-                                    <a class="btn btn-sm" href="<?= e($downloadUrl . '?file=' . $item['uuid']) ?>">
+                                    <a class="btn btn-sm" href="<?= e($fileDownloadUrl($item)) ?>">
                                         <?= icon('download') ?> Download
                                     </a>
                                 </td>

@@ -44,6 +44,9 @@ $router->group(['middleware' => ['installed']], static function ($router): void 
     $router->get('/s/{token}/download', ShareController::class . '@publicDownload')->middleware('throttle:120,60');
     $router->get('/s/{token}/preview', ShareController::class . '@publicPreview')->middleware('throttle:120,60');
 
+    // CDN-cacheable direct download (no session; see App::handle)
+    $router->get('/cdn/{token}/{filename}', ShareController::class . '@cdnDownload')->middleware('throttle:120,60');
+
     // Signed, expiring download
     $router->get('/download/{uuid}', FileController::class . '@signedDownload')->middleware('throttle:120,60');
 });
@@ -163,10 +166,19 @@ $router->group(['prefix' => '/admin', 'middleware' => ['installed', 'auth', 'adm
 
     $router->get('/storage', AdminController::class . '@storage');
     $router->post('/storage', AdminController::class . '@storeBackend')->middleware('csrf');
+    // Before the /storage/{id}/... routes, which would otherwise take "cdn"/"google" as an id.
+    $router->get('/storage/google/start', AdminController::class . '@googleStart');
+    $router->post('/storage/google/client', AdminController::class . '@saveGoogleClient')->middleware('csrf');
+    $router->post('/storage/cdn', AdminController::class . '@saveCdn')->middleware('csrf');
+    $router->post('/storage/cdn/test', AdminController::class . '@testCdn')->middleware('csrf', 'throttle:20,60');
+    $router->post('/storage/cdn/rule', AdminController::class . '@cdnRule')->middleware('csrf', 'throttle:20,60');
     $router->post('/storage/{id}/update', AdminController::class . '@updateBackend')->middleware('csrf');
     $router->post('/storage/{id}/test', AdminController::class . '@testBackend')->middleware('csrf', 'throttle:20,60');
     $router->post('/storage/{id}/default', AdminController::class . '@defaultBackend')->middleware('csrf');
     $router->post('/storage/{id}/migrate', AdminController::class . '@migrateBackend')->middleware('csrf');
+    $router->get('/storage/google/callback', AdminController::class . '@googleCallback');
+    $router->get('/storage/{id}/google/connect', AdminController::class . '@googleConnect');
+    $router->post('/storage/{id}/replicas/retry', AdminController::class . '@retryReplicas')->middleware('csrf');
     $router->post('/storage/{id}/delete', AdminController::class . '@deleteBackend')->middleware('csrf');
 
     $router->get('/sftp', AdminController::class . '@sftp');

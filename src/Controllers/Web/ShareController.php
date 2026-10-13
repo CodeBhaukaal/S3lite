@@ -163,6 +163,36 @@ final class ShareController extends Controller
         return $this->redirect('/s/' . $token);
     }
 
+    /**
+     * The CDN-cacheable form of a share download: /cdn/{token}/{filename}.
+     *
+     * Runs without a session (see App::handle) because Cloudflare will not
+     * cache a response that sets a cookie. A link that is no longer safe to
+     * cache is bounced to the normal download, which enforces passwords.
+     */
+    public function cdnDownload(Request $request, string $token, string $filename): Response
+    {
+        $resolved = ShareService::resolve($token);
+        $ttl = $resolved['ok'] ? \App\Services\CdnCacheService::ttlForShare($resolved['share']) : 0;
+
+        if ($ttl === 0) {
+            $fallback = url('s/' . rawurlencode($token) . '/download');
+            $file = $request->string('file');
+
+            return Response::redirect($file === '' ? $fallback : $fallback . '?file=' . rawurlencode($file))
+                ->header('Cache-Control', 'private, no-store');
+        }
+
+        $response = $this->publicDownload($request, $token);
+
+        // Errors (a file removed from the folder, say) must not be cached.
+        if ($response->status() === 200 || $response->status() === 206 || $response->status() === 304) {
+            $response->withHeaders(\App\Services\CdnCacheService::headers($ttl));
+        }
+
+        return $response;
+    }
+
     public function publicDownload(Request $request, string $token): Response
     {
         $result = ShareService::resolve($token);

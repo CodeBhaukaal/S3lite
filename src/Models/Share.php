@@ -59,6 +59,17 @@ final class Share extends Model
         );
     }
 
+    private static function cdnUrl(array $share): ?string
+    {
+        if ($share['file_id'] === null || \App\Services\CdnCacheService::ttlForShare($share) === 0) {
+            return null;
+        }
+
+        $file = FileRecord::find((int) $share['file_id']);
+
+        return $file === null ? null : \App\Services\CdnCacheService::url($share, $file);
+    }
+
     public static function publicArray(array $share): array
     {
         return [
@@ -67,6 +78,8 @@ final class Share extends Model
             'token'          => $share['token'],
             'url'            => url('s/' . $share['token']),
             'direct_url'     => url('s/' . $share['token'] . '/download'),
+            // Set only for file links Cloudflare may cache; prefer it when present.
+            'cdn_url'        => self::cdnUrl($share),
             'file_id'        => $share['file_id'] === null ? null : (int) $share['file_id'],
             'folder_id'      => $share['folder_id'] === null ? null : (int) $share['folder_id'],
             'type'           => $share['type'],
