@@ -852,6 +852,7 @@ final class UnitTest extends TestCase
             ]);
         }
         StorageManager::reset();
+        \App\Services\ReplicationService::$onlyLayers = [$layerSlug];
 
         $path = $userId . '/ab/cd/replica-' . Str::random(8) . '.bin';
         $body = 'backed up ' . Str::random(32);
@@ -911,6 +912,7 @@ final class UnitTest extends TestCase
                 \App\Models\StorageBackend::deleteById($id);
             }
             StorageManager::reset();
+            \App\Services\ReplicationService::$onlyLayers = [];
         }
     }
 
@@ -1150,6 +1152,7 @@ final class UnitTest extends TestCase
             ]),
         ];
         StorageManager::reset();
+        \App\Services\ReplicationService::$onlyLayers = [$driveSlug];
 
         $path = $userId . '/ef/01/drive-' . Str::random(8) . '.txt';
         $body = 'safe in drive ' . Str::random(16);
@@ -1188,6 +1191,7 @@ final class UnitTest extends TestCase
                 \App\Models\StorageBackend::deleteById($id);
             }
             StorageManager::reset();
+            \App\Services\ReplicationService::$onlyLayers = [];
         }
     }
 

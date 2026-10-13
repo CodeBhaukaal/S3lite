@@ -22,6 +22,11 @@ if (!class_exists(App::class)) {
 require __DIR__ . '/TestCase.php';
 require __DIR__ . '/HttpClient.php';
 
+// The suite shares the site's database. Keep in-process tests away from the
+// site's real backup layers (a connected Google Drive, say); tests that need
+// a layer allow their own fixture slugs explicitly.
+\App\Services\ReplicationService::$onlyLayers = [];
+
 /**
  * Shared configuration for the integration suites.
  */

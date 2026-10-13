@@ -26,6 +26,15 @@ final class ReplicationService
     public const MAX_ATTEMPTS = 5;
 
     /**
+     * Test seam: when set, only these slugs count as layers. The suite runs
+     * against a live database, and must never copy its fixtures to the
+     * site's real backup layers.
+     *
+     * @var list<string>|null
+     */
+    public static ?array $onlyLayers = null;
+
+    /**
      * Active backup layers, in the order they are tried.
      *
      * @return list<array>
@@ -33,7 +42,7 @@ final class ReplicationService
     public static function layers(): array
     {
         try {
-            return Database::select(
+            $rows = Database::select(
                 'SELECT * FROM storage_backends
                  WHERE is_active = 1 AND replica_priority IS NOT NULL
                  ORDER BY replica_priority ASC, id ASC'
@@ -41,6 +50,12 @@ final class ReplicationService
         } catch (Throwable) {
             return []; // Migration 003 not applied yet.
         }
+
+        if (self::$onlyLayers === null) {
+            return $rows;
+        }
+
+        return array_values(array_filter($rows, static fn (array $r): bool => in_array((string) $r['slug'], self::$onlyLayers, true)));
     }
 
     /**
@@ -88,6 +103,10 @@ final class ReplicationService
             "SELECT * FROM file_replicas WHERE status = 'pending' AND attempts < ? ORDER BY id LIMIT " . $limit,
             [self::MAX_ATTEMPTS]
         );
+
+        if (self::$onlyLayers !== null) {
+            $rows = array_filter($rows, static fn (array $r): bool => in_array((string) $r['disk'], self::$onlyLayers, true));
+        }
 
         foreach ($rows as $row) {
             $path = (string) $row['storage_path'];
@@ -209,7 +228,8 @@ final class ReplicationService
         }
 
         foreach (self::syncedLayers($path) as $slug) {
-            if ($slug === $primarySlug || $slug === $exceptSlug) {
+            if ($slug === $primarySlug || $slug === $exceptSlug
+                || (self::$onlyLayers !== null && !in_array($slug, self::$onlyLayers, true))) {
                 continue;
             }
 

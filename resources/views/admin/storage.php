@@ -301,7 +301,7 @@ View::startSection('content');
             <p class="faint small">
                 With an API token the panel creates the cache rule for you and clears Cloudflare's copy as soon as a link
                 is revoked, a password is added, or the file is replaced, renamed or deleted. Without one, cached copies
-                expire on their own. The token needs <strong>Zone → Cache Rules: Edit</strong> and
+                expire on their own. The token needs <strong>Zone → Cache Rules: Edit</strong> (or Read + Edit) and
                 <strong>Zone → Cache Purge: Purge</strong> on this zone.
             </p>
             <div class="form-row">

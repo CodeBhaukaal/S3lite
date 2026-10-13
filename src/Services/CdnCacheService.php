@@ -215,9 +215,23 @@ final class CdnCacheService
                 throw new RuntimeException('Enter a zone ID and an API token first.');
             }
 
-            $zone = self::call('GET', '/zones/' . self::zoneId());
+            // Checked against what the token is actually for, so it needs no
+            // Zone:Read on top of Cache Rules + Cache Purge. 404 just means
+            // the zone has no cache rules yet.
+            [$status, $body] = self::api('GET', sprintf('/zones/%s/rulesets/phases/http_request_cache_settings/entrypoint', self::zoneId()));
 
-            return ['ok' => true, 'message' => 'Connected to Cloudflare zone ' . ($zone['result']['name'] ?? self::zoneId()) . '.'];
+            if ($status !== 200 && $status !== 404) {
+                throw new RuntimeException(self::errorFrom($body, $status));
+            }
+
+            $hasRule = false;
+            foreach ((array) ($body['result']['rules'] ?? []) as $rule) {
+                $hasRule = $hasRule || ($rule['ref'] ?? '') === self::RULE_REF;
+            }
+
+            return ['ok' => true, 'message' => 'Connected to Cloudflare. ' . ($hasRule
+                ? 'The download cache rule is in place.'
+                : 'Now press "Create cache rule in Cloudflare".')];
         } catch (Throwable $e) {
             return ['ok' => false, 'message' => $e->getMessage()];
         }
