@@ -4,11 +4,9 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Core\Database;
-use App\Http\Exceptions\HttpException;
 use App\Http\Request;
 use App\Http\Response;
 use App\Models\FileRecord;
-use App\Storage\StorageManager;
 
 /**
  * Streams file bytes with HTTP range support, and records the transfer.
@@ -24,11 +22,9 @@ final class DownloadService
         ?int $shareId = null,
         string $source = 'web'
     ): Response {
-        $disk = StorageManager::disk((string) $file['disk']);
-
-        if (!$disk->exists((string) $file['storage_path'])) {
-            throw new HttpException(404, 'The stored file is missing from disk.', 'file_missing');
-        }
+        // The primary when it can serve the file, otherwise the first backup
+        // layer holding a verified copy. Throws 404 only if none can.
+        $disk = ReplicationService::readableDisk((string) $file['disk'], (string) $file['storage_path']);
 
         $size = (int) $file['size'] ?: $disk->size((string) $file['storage_path']);
         $mime = (string) $file['mime'];
@@ -167,7 +163,7 @@ final class DownloadService
     /** Inline preview payload for text-like files. */
     public static function previewText(array $file, int $maxBytes = 262144): string
     {
-        $disk = StorageManager::disk((string) $file['disk']);
+        $disk = ReplicationService::readableDisk((string) $file['disk'], (string) $file['storage_path']);
         $stream = $disk->readStream((string) $file['storage_path']);
 
         if ($stream === null) {

@@ -580,6 +580,7 @@ final class AdminController extends Controller
         return $this->view('admin.storage', [
             'backends'    => $backends,
             'usage'       => StorageBackendService::usageBySlug(),
+            'replicas'    => \App\Services\ReplicationService::statusBySlug(),
             'drivers'     => \App\Models\StorageBackend::DRIVERS,
             'defaultSlug' => \App\Storage\StorageManager::defaultSlug(),
             'capabilities' => [
@@ -663,6 +664,19 @@ final class AdminController extends Controller
             $backend['slug'],
             $target
         ));
+    }
+
+    public function retryReplicas(Request $request, string $id): Response
+    {
+        $backend = \App\Models\StorageBackend::find((int) $id);
+
+        if ($backend === null) {
+            return $this->back($request, 'error', 'Backend not found.');
+        }
+
+        $count = \App\Services\ReplicationService::retryFailed((string) $backend['slug']);
+
+        return $this->back($request, 'success', sprintf('Re-queued %d backup cop%s.', $count, $count === 1 ? 'y' : 'ies'));
     }
 
     /** Shape a posted backend form into service input. */

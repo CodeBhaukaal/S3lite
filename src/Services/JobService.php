@@ -24,6 +24,7 @@ final class JobService
         'integrity.check'  => 'Verify stored files against the index',
         'orphans.prune'    => 'Delete stored blobs with no database row',
         'storage.migrate'  => 'Move stored files from one storage backend to another',
+        'storage.replicate' => 'Copy new files to the backup storage layers',
         'webhook.deliver'  => 'Deliver a webhook payload',
         'audit.purge'      => 'Delete audit entries past the retention window',
     ];
@@ -56,6 +57,7 @@ final class JobService
                 'integrity.check' => self::integrity(),
                 'orphans.prune'   => 'Removed ' . BackupService::pruneOrphans() . ' orphaned blobs',
                 'storage.migrate' => self::migrateStorage($payload),
+                'storage.replicate' => self::replicate(),
                 'webhook.deliver' => self::webhook($payload),
                 'audit.purge'     => 'Deleted ' . AuditService::purge((int) ($payload['days'] ?? 180)) . ' audit entries',
                 default           => throw new \RuntimeException("Unknown job type: {$type}"),
@@ -200,6 +202,22 @@ final class JobService
 
         if ($result['remaining'] > 0 && $result['moved'] > 0) {
             self::dispatch('storage.migrate', $payload, 5);
+        }
+
+        return json_encode($result, JSON_UNESCAPED_SLASHES) ?: '';
+    }
+
+    /**
+     * Drain one batch of pending backup copies. Every upload queues a job, so
+     * only chain another when this batch made progress and work is left —
+     * otherwise a dead layer would requeue itself forever.
+     */
+    private static function replicate(): string
+    {
+        $result = ReplicationService::run(100);
+
+        if ($result['remaining'] > 0 && $result['synced'] > 0) {
+            self::dispatch('storage.replicate', [], 5);
         }
 
         return json_encode($result, JSON_UNESCAPED_SLASHES) ?: '';

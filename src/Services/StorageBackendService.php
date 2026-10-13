@@ -44,6 +44,10 @@ final class StorageBackendService
 
         $backend = StorageBackend::find($id) ?? [];
 
+        if ($data['replica_priority'] !== null && $data['is_active']) {
+            ReplicationService::backfill($data['slug']);
+        }
+
         AuditService::log('storage.backend_create', 'storage', $id, 'Added storage backend ' . $data['name'], [
             'driver' => $data['driver'],
             'slug'   => $data['slug'],
@@ -60,6 +64,11 @@ final class StorageBackendService
         $data = self::normalise($input, (string) $backend['driver']);
         unset($data['driver']);
 
+        // A partial API update that does not mention the layer leaves it alone.
+        if (!array_key_exists('replica_priority', $input)) {
+            $data['replica_priority'] = $backend['replica_priority'] === null ? null : (int) $backend['replica_priority'];
+        }
+
         $data['secret'] = StorageBackend::mergeCredentials($backend, self::secretsFrom($input));
 
         StorageBackend::updateById($id, $data);
@@ -69,6 +78,14 @@ final class StorageBackendService
         }
 
         StorageManager::reset();
+
+        // Becoming a layer (or being switched back on as one) backs up the
+        // files that were uploaded before it existed.
+        $wasLayer = $backend['replica_priority'] !== null && (bool) $backend['is_active'];
+
+        if (!$wasLayer && $data['replica_priority'] !== null && $data['is_active']) {
+            ReplicationService::backfill((string) $backend['slug']);
+        }
 
         AuditService::log('storage.backend_update', 'storage', $id, 'Updated storage backend ' . $backend['name']);
 
@@ -109,6 +126,9 @@ final class StorageBackendService
                 'backend_in_use'
             );
         }
+
+        // Backup copies are not primaries; dropping the layer just forgets them.
+        Database::statement('DELETE FROM file_replicas WHERE disk = ?', [$slug]);
 
         StorageBackend::deleteById($id);
         StorageManager::reset();
@@ -239,7 +259,8 @@ final class StorageBackendService
             throw new HttpException(422, 'Pick two different backends.', 'same_backend');
         }
 
-        $source = StorageManager::disk($fromSlug);
+        // The source is not opened up front: when it is the server that went
+        // down, each object is read from a backup layer instead.
         $target = StorageManager::disk($toSlug);
 
         $limit = max(1, min(1000, $limit));
@@ -263,6 +284,8 @@ final class StorageBackendService
             $path = (string) $row['storage_path'];
 
             try {
+                $source = ReplicationService::readableDisk($fromSlug, $path, $toSlug);
+
                 if (!self::transfer($source, $target, $path)) {
                     throw new \RuntimeException('copy failed');
                 }
@@ -273,8 +296,16 @@ final class StorageBackendService
                 );
 
                 // Only unlink once nothing left on the source still points here.
+                // A dead source cannot be cleaned up; that must not fail the move.
                 if (!self::stillReferenced($fromSlug, $path)) {
-                    $source->delete($path);
+                    try {
+                        StorageManager::disk($fromSlug)->delete($path);
+                    } catch (Throwable $e) {
+                        Logger::warning('Migrated, but could not remove the source copy: ' . $e->getMessage(), [
+                            'disk' => $fromSlug,
+                            'path' => $path,
+                        ]);
+                    }
                 }
 
                 $moved++;
@@ -306,7 +337,7 @@ final class StorageBackendService
     }
 
     /** Stream one object across, verifying the byte count on arrival. */
-    private static function transfer(StorageDriver $source, StorageDriver $target, string $path): bool
+    public static function transfer(StorageDriver $source, StorageDriver $target, string $path): bool
     {
         if ($target->exists($path)) {
             return true; // A previous pass already copied it.
@@ -512,6 +543,10 @@ final class StorageBackendService
             'root_path' => rtrim(trim(str_replace('\\', '/', (string) ($input['root_path'] ?? ''))), '/'),
             'options'   => $options,
             'is_active' => !array_key_exists('is_active', $input) || (bool) $input['is_active'],
+            // Blank or 0 = not a backup layer; 1 is tried first.
+            'replica_priority' => (int) ($input['replica_priority'] ?? 0) > 0
+                ? min(99, (int) $input['replica_priority'])
+                : null,
         ];
     }
 

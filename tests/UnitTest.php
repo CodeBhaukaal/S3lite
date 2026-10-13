@@ -825,6 +825,95 @@ final class UnitTest extends TestCase
         @unlink($marker);
     }
 
+    /**
+     * Upload lands on the primary, the queue copies it to the backup layer,
+     * and once the primary loses it (or the whole backend goes away) reads
+     * come from the backup instead. Deleting removes every copy.
+     */
+    public function testBackupLayerServesWhenPrimaryFails(): void
+    {
+        $base = rtrim(str_replace('\\', '/', sys_get_temp_dir()), '/') . '/replica-' . Str::random(6);
+        $primarySlug = 'suite-primary-' . strtolower(Str::random(6));
+        $layerSlug = 'suite-layer-' . strtolower(Str::random(6));
+        $userId = (int) \App\Core\Database::scalar('SELECT id FROM users ORDER BY id LIMIT 1');
+
+        if ($userId === 0) {
+            $this->skip('No user to own the test file');
+        }
+
+        // Created directly, not through the service, so no backfill copies
+        // the whole dev library into the temp layer.
+        $ids = [];
+        foreach ([[$primarySlug, null, '/a'], [$layerSlug, 1, '/b']] as [$slug, $priority, $dir]) {
+            $ids[] = \App\Models\StorageBackend::create([
+                'uuid' => Str::uuid(), 'name' => $slug, 'slug' => $slug, 'driver' => 'local',
+                'root_path' => $base . $dir, 'options' => [], 'is_active' => 1,
+                'replica_priority' => $priority, 'status' => 'ok',
+            ]);
+        }
+        StorageManager::reset();
+
+        $path = $userId . '/ab/cd/replica-' . Str::random(8) . '.bin';
+        $body = 'backed up ' . Str::random(32);
+        $fileId = 0;
+
+        try {
+            $this->assertTrue(StorageManager::disk($primarySlug)->putContents($path, $body));
+            $fileId = \App\Models\FileRecord::create([
+                'uuid' => Str::uuid(), 'user_id' => $userId, 'name' => 'replica.bin', 'original_name' => 'replica.bin',
+                'size' => strlen($body), 'checksum' => hash('sha256', $body), 'disk' => $primarySlug, 'storage_path' => $path,
+            ]);
+
+            \App\Services\ReplicationService::queue($primarySlug, $path);
+            $this->assertSame('pending', \App\Core\Database::scalar(
+                'SELECT status FROM file_replicas WHERE storage_path = ? AND disk = ?', [$path, $layerSlug]
+            ));
+
+            \App\Services\ReplicationService::run();
+            $this->assertSame('synced', \App\Core\Database::scalar(
+                'SELECT status FROM file_replicas WHERE storage_path = ? AND disk = ?', [$path, $layerSlug]
+            ));
+            $this->assertSame($body, StorageManager::disk($layerSlug)->get($path), 'The layer should hold a copy');
+
+            // Healthy primary: it is preferred.
+            $this->assertSame($primarySlug, \App\Services\ReplicationService::readableDisk($primarySlug, $path)->name());
+
+            // Primary lost the object: the backup answers.
+            StorageManager::disk($primarySlug)->delete($path);
+            $disk = \App\Services\ReplicationService::readableDisk($primarySlug, $path);
+            $this->assertSame($layerSlug, $disk->name());
+            $this->assertSame($body, $disk->get($path));
+
+            // Primary backend unreachable altogether: still served.
+            $this->assertSame($layerSlug, \App\Services\ReplicationService::readableDisk('suite-gone-' . Str::random(6), $path)->name());
+
+            // Migrating off the primary that lost it reads from the backup.
+            $result = \App\Services\StorageBackendService::migrate($primarySlug, 'local', 10);
+            $this->assertSame(1, $result['moved'], 'Migration should recover the file from the backup: ' . implode('; ', $result['errors']));
+            $this->assertSame($body, StorageManager::disk('local')->get($path));
+
+            // Delete clears every copy and the bookkeeping.
+            \App\Services\ReplicationService::deleteEverywhere('local', $path);
+            $this->assertFalse(StorageManager::disk($layerSlug)->exists($path));
+            $this->assertFalse(StorageManager::disk('local')->exists($path));
+            $this->assertSame(0, (int) \App\Core\Database::scalar('SELECT COUNT(*) FROM file_replicas WHERE storage_path = ?', [$path]));
+
+            $this->assertThrows(
+                \App\Http\Exceptions\HttpException::class,
+                static fn () => \App\Services\ReplicationService::readableDisk('local', $path)
+            );
+        } finally {
+            if ($fileId > 0) {
+                \App\Models\FileRecord::deleteById($fileId);
+            }
+            \App\Core\Database::statement('DELETE FROM file_replicas WHERE storage_path = ?', [$path]);
+            foreach ($ids as $id) {
+                \App\Models\StorageBackend::deleteById($id);
+            }
+            StorageManager::reset();
+        }
+    }
+
     public function testUnknownBackendSlugFailsLoudly(): void
     {
         $this->assertThrows(

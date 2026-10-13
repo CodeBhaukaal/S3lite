@@ -108,7 +108,18 @@ View::startSection('content');
                             <?php if ($backend['is_default']): ?>
                                 <span class="badge badge-accent">default</span>
                             <?php endif; ?>
+                            <?php if ($backend['replica_priority'] !== null): ?>
+                                <span class="badge">backup layer <?= e((string) $backend['replica_priority']) ?></span>
+                            <?php endif; ?>
                             <div class="faint small mono"><?= e($backend['slug']) ?></div>
+                            <?php $copies = $replicas[$backend['slug']] ?? null; ?>
+                            <?php if ($copies !== null): ?>
+                                <div class="faint small">
+                                    <?= e((string) $copies['synced']) ?> backed up
+                                    <?php if ($copies['pending'] > 0): ?> · <?= e((string) $copies['pending']) ?> pending<?php endif; ?>
+                                    <?php if ($copies['failed'] > 0): ?> · <span class="text-danger"><?= e((string) $copies['failed']) ?> failed</span><?php endif; ?>
+                                </div>
+                            <?php endif; ?>
                         </td>
                         <td>
                             <span class="badge">
@@ -171,6 +182,7 @@ View::startSection('content');
                                             data-check-use_pasv_address="<?= ($backend['options']['use_pasv_address'] ?? true) ? '1' : '0' ?>"
                                             data-check-is_active="<?= $backend['is_active'] ? '1' : '0' ?>"
                                             data-check-is_default="<?= $backend['is_default'] ? '1' : '0' ?>"
+                                            data-fill-replica_priority="<?= e((string) ($backend['replica_priority'] ?? '')) ?>"
                                             data-fill-name="<?= e($backend['name']) ?>"
                                             data-fill-host="<?= e((string) $backend['host']) ?>"
                                             data-fill-port="<?= e((string) $backend['port']) ?>"
@@ -203,6 +215,13 @@ View::startSection('content');
                                             </div>
                                             <button class="dropdown__item" type="submit"
                                                     data-confirm="Queue a background job to move every file off this backend?"><?= icon('zap') ?> Migrate files</button>
+                                        </form>
+                                    <?php endif; ?>
+
+                                    <?php if (($copies['failed'] ?? 0) > 0): ?>
+                                        <form method="post" action="<?= e(url('/admin/storage/' . $backend['id'] . '/replicas/retry')) ?>">
+                                            <?= csrf_field() ?>
+                                            <button class="dropdown__item" type="submit"><?= icon('refresh') ?> Retry failed backups</button>
                                         </form>
                                     <?php endif; ?>
 
@@ -356,6 +375,16 @@ View::startSection('content');
                         <input type="checkbox" name="is_default" value="1"> Send new uploads here
                     </label>
                 </div>
+
+                <div class="field mt-1">
+                    <label class="label">Backup layer</label>
+                    <input class="input" name="replica_priority" type="number" min="0" max="99" placeholder="off">
+                    <p class="faint small">
+                        Give a number to keep a copy of every file here in the background: 1 is the first backup,
+                        2 the second, and so on. Downloads use these copies when the main backend is down.
+                        Leave blank to turn it off.
+                    </p>
+                </div>
             </div>
             <div class="modal__foot">
                 <button class="btn" type="button" data-modal-close>Cancel</button>
@@ -487,6 +516,16 @@ View::startSection('content');
                         <input type="hidden" name="is_default" value="0">
                         <input type="checkbox" name="is_default" value="1"> Send new uploads here
                     </label>
+                </div>
+
+                <div class="field mt-1">
+                    <label class="label">Backup layer</label>
+                    <input class="input" name="replica_priority" type="number" min="0" max="99" placeholder="off">
+                    <p class="faint small">
+                        Give a number to keep a copy of every file here in the background: 1 is the first backup,
+                        2 the second, and so on. Downloads use these copies when the main backend is down.
+                        Leave blank to turn it off.
+                    </p>
                 </div>
 
                 <p class="faint small mt-2" data-storage-fields="ftp ftps sftp s3">

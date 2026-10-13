@@ -27,6 +27,7 @@ final class Scheduler
         'queue'           => 0,       // deliver webhooks and queued work
         'metrics.sample'  => 300,     // 5 minutes  — builds the monitoring chart
         'sftp.sync'       => 600,     // 10 minutes — index SFTP uploads
+        'storage.replicate' => 900,   // 15 minutes — retry backup copies a down layer missed
         'cleanup'         => 86400,   // daily      — trash, tokens, temp files
         'backup'          => 86400,   // daily      — database dump
         'integrity.check' => 604800,  // weekly     — index vs disk
