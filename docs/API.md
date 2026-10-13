@@ -131,7 +131,7 @@ by a non-admin still cannot list other users.
 | GET | `/files/{id}/versions` | Version history |
 | GET | `/files/{id}/versions/{v}/download` | A specific version |
 | POST | `/files/{id}/versions/{v}/restore` | Roll back |
-| POST | `/files/{id}/share` | `type`, `password`, `expires_at`/`expires_in`, `max_downloads`, `allow_preview` |
+| POST | `/files/{id}/share` | `type`, `password`, `expires_at`/`expires_in`, `max_downloads`, `allow_preview`. The response has `url` (share page), `direct_url` (download) and, when Cloudflare caching applies to the link, `cdn_url` — prefer it for public downloads |
 | DELETE | `/files/{id}/share` | Revoke every link for the file |
 | POST | `/files/{id}/temporary-url` | Signed URL, `ttl` seconds |
 
@@ -225,9 +225,9 @@ only report whether one is set.
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/storage-backends` | Backends, per-backend usage, the current default and this server's protocol support |
-| POST | `/storage-backends` | `name`, `driver` (`local`/`ftp`/`ftps`/`sftp`/`s3`), `host`, `port`, `username`, `password`, `private_key`, `passphrase`, `root_path`, `timeout`, `is_default` |
+| POST | `/storage-backends` | `name`, `driver` (`local`/`ftp`/`ftps`/`sftp`/`s3`), `host`, `port`, `username`, `password`, `private_key`, `passphrase`, `root_path`, `timeout`, `is_default`, `replica_priority` (backup layer `1`, `2`, … or `null`). Google Drive is connected by signing in from the panel |
 | GET | `/storage-backends/{id}` | Accepts an id, uuid or slug |
-| PATCH | `/storage-backends/{id}` | Blank credential fields keep the stored value |
+| PATCH | `/storage-backends/{id}` | Blank credential fields keep the stored value; leaving out `replica_priority` keeps the layer setting |
 | DELETE | `/storage-backends/{id}` | Refused while files still point at it |
 | POST | `/storage-backends/{id}/test` | Write/read/delete a probe object; `502` when it fails |
 | POST | `/storage-backends/{id}/default` | Send new uploads here |

@@ -6,7 +6,10 @@
 storage and sharing platform written in plain PHP 8.2 — a modern web panel, a
 full REST API, resumable chunked uploads, password-protected and expiring share
 links, per-user storage quotas, file versioning, FTP/FTPS/SFTP account
-management, live monitoring and a complete audit trail.
+management, live monitoring and a complete audit trail. Keep the files on this
+server, your own FTP/SFTP server, an S3 bucket or Google Drive — with automatic
+backup copies, fail-over when a server goes down, and Cloudflare caching for
+public downloads.
 
 **No framework. No Composer packages. No build step.** Drop it into a web root,
 open the browser, and an install wizard does the rest. Works on XAMPP, WAMP,
@@ -14,14 +17,17 @@ shared hosting, a VPS, or Docker.
 
 [![PHP](https://img.shields.io/badge/PHP-8.2%2B-777bb4)](https://www.php.net/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-96%20passing-brightgreen)](#tests)
+[![Release](https://img.shields.io/github/v/release/CodeBhaukaal/S3lite)](https://github.com/CodeBhaukaal/S3lite/releases/latest)
+[![Tests](https://img.shields.io/badge/tests-124-brightgreen)](#tests)
 [![Self-hosted](https://img.shields.io/badge/self--hosted-yes-blue)](#quick-start-xampp--wamp--any-apache--php-host)
 
 **Contents** ·
+[Download](https://github.com/CodeBhaukaal/S3lite/releases/latest) ·
 [Quick start](#quick-start-xampp--wamp--any-apache--php-host) ·
 [Admin password](#administrator-account--password) ·
 [Docker](#quick-start-docker) ·
 [Features](#what-it-does) ·
+[Storage &amp; caching](#storage-backups-and-caching) ·
 [REST API](#api) ·
 [Security](#security) ·
 [Deployment](docs/DEPLOYMENT.md)
@@ -52,7 +58,7 @@ of every write.
 | **Dashboard** | storage usage, transfer charts, recent files, activity |
 | **Files** | grid/list browser, drag-and-drop upload, folders, tags, search, preview |
 | **Share links** | permanent, expiring, password-protected, download-limited |
-| **Admin** | users, roles, all files, FTP/SFTP, monitoring, jobs, backups, logs, IP rules |
+| **Admin** | users, roles, all files, storage backends and backups, Cloudflare caching, FTP/SFTP, monitoring, jobs, logs, IP rules |
 | **API docs** | generated reference with copy-paste cURL / PHP / JS / Java examples |
 
 The interface uses inline SVG icons only — no emoji, no icon fonts, no external
@@ -62,12 +68,27 @@ requests — and is fully responsive down to a 360 px phone.
 
 ## Quick start (XAMPP / WAMP / any Apache + PHP host)
 
-1. Drop the project inside your web root, e.g. `htdocs/s3`.
-2. Point a browser at `http://localhost/s3/public/`.
+1. Download **`s3lite-<version>.zip`** from the
+   [latest release](https://github.com/CodeBhaukaal/S3lite/releases/latest)
+   (or clone the repository) and unzip it inside your web root, e.g. `htdocs/s3`.
+   On a hosting panel, upload the zip through the file manager and extract it.
+2. Point a browser at `http://localhost/s3/public/` — on a real domain, set the
+   document root to the `public/` folder.
 3. The install wizard checks requirements, tests the database and Redis, writes
    `.env`, creates the schema and **your administrator account**.
+4. Add the [cron entry](#scheduling--one-entry-is-enough) so backups, migrations
+   and cleanup run on their own.
 
 That is the whole setup.
+
+### Upgrading
+
+Replace the files with the new release, keeping your `.env` and the `storage/`
+folder, then apply any new tables:
+
+```bash
+php bin/console migrate
+```
 
 ### Install from the command line instead
 
@@ -181,7 +202,7 @@ DB_PASSWORD: a-strong-database-password
 
 | Requirement | Notes |
 |---|---|
-| PHP 8.2+ | `pdo_mysql`, `mbstring`, `openssl`, `fileinfo`, `json`, `curl` |
+| PHP 8.2+ | `pdo_mysql`, `mbstring`, `openssl`, `fileinfo`, `json`, `curl` (`curl` also drives S3, SFTP, Google Drive and Cloudflare; `ftp` is needed only for FTP/FTPS storage) |
 | MySQL 5.7+ / MariaDB 10.4+ | Created automatically if the user may do so |
 | Apache or Nginx | `mod_rewrite` (an `index.php/path` fallback exists) |
 | Redis | Optional. A bundled pure-PHP client is used, so `php_redis` is not needed |
@@ -254,7 +275,8 @@ starts with `/cdn/` → Eligible for cache → Edge TTL "use cache-control heade
 if present, bypass cache if not".
 
 Backups and migrations run from the queue, so schedule `public/cron.php` (see
-below).
+below). The full guide, with the Google Cloud steps and every caching rule, is
+in [docs/STORAGE.md](docs/STORAGE.md).
 
 ---
 
@@ -273,7 +295,7 @@ src/
   Middleware/          auth, CSRF, throttle, scopes, idempotency, IP filter
   Models/              thin data layer over PDO
   Services/            all business logic
-  Storage/             driver interface, local + S3 drivers
+  Storage/             driver interface; local, FTP/FTPS, SFTP, S3 and Google Drive drivers
   Controllers/         Web/ and Api/
 storage/               files, chunks, logs, cache, backups, sftp homes
 tests/                 unit + HTTP integration suite
@@ -323,8 +345,9 @@ HTTP from a free service such as cron-job.org:
 https://your-site/cron.php?token=YOUR_CRON_TOKEN
 ```
 
-Without `CRON_TOKEN` the URL form stays disabled rather than leaving an open
-endpoint. The panel shows the exact path, command and URL to copy, plus when each
+The token can also be sent as an `X-Cron-Token` header, which keeps it out of
+access logs. Without `CRON_TOKEN` the URL form stays disabled rather than
+leaving an open endpoint. The panel shows the exact path, command and URL to copy, plus when each
 task last ran.
 
 ```bash
@@ -363,6 +386,10 @@ curl -H "X-Api-Key: s3k_…" -F "file=@report.pdf" $BASE/files/upload
 # Share
 curl -H "X-Api-Key: s3k_…" -X POST -d "expires_in=86400" -d "password=hunter2" \
      $BASE/files/{id}/share
+
+# Permanent public link (no expiry). With Cloudflare caching on, the response
+# also carries a cdn_url that Cloudflare serves from its cache.
+curl -H "X-Api-Key: s3k_…" -X POST $BASE/files/{id}/share
 ```
 
 Responses always use one envelope:
@@ -409,15 +436,19 @@ php tests/run.php --filter=Api
 php tests/run.php --url=http://localhost:8080 --admin=admin@example.com --password=Secret123
 ```
 
-96 tests covering the support libraries, the REST API end to end (including
-resumable uploads, share passwords, scope enforcement and SFTP account
-lifecycle) and the web panel (sessions, CSRF, every page, security headers,
-responsive layout).
+124 tests covering the support libraries and storage drivers, the REST API end
+to end (including resumable uploads, share passwords, scope enforcement and SFTP
+account lifecycle) and the web panel (sessions, CSRF, every page, security
+headers, responsive layout). FTP, Google Drive and Cloudflare are exercised
+against small fake servers in `tests/`, so no real account is needed.
 
-The suite talks to a running server, so start Apache first. It cleans up
-everything it creates, and clears its own rate-limit counters and login lockout
-on start so consecutive runs stay repeatable — it does not weaken the defaults
-it is testing.
+The suite talks to a running server, so start Apache first. It uses the site's
+database, cleans up everything it creates, and clears its own rate-limit
+counters and login lockout on start so consecutive runs stay repeatable — it
+does not weaken the defaults it is testing. The in-process tests never touch
+your real backup layers; the API and web suites upload through the live server,
+so their test files are briefly copied to any backup layer you have configured
+(and removed again when the tests delete them).
 
 ---
 
@@ -429,7 +460,9 @@ under **Settings**. Notable keys:
 | Key | Default | Purpose |
 |---|---|---|
 | `APP_URL` | — | Public URL of `public/` |
-| `STORAGE_DRIVER` | `local` | `local` or `s3` |
+| `STORAGE_DRIVER` | `local` | `local` or `s3` — only until a backend is added in **Admin → Storage** |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | — | Optional; the Google OAuth client for *Connect Google Drive* (can also be saved in the panel) |
+| `CRON_TOKEN` | generated | Enables triggering `cron.php` over HTTP |
 | `MAX_UPLOAD_SIZE` | 5 GB | Per-file ceiling |
 | `CHUNK_SIZE` | 8 MB | Above this, uploads become resumable |
 | `DEFAULT_QUOTA` | 10 GB | Per-user, `0` = unlimited |
@@ -474,6 +507,32 @@ directory, and make it the default — new uploads go straight there. FTP, FTPS
 time, and existing files can be migrated across in the background. Every file
 remembers which backend holds it, so switching never breaks old downloads. See
 [docs/STORAGE.md](docs/STORAGE.md).
+
+**Can I keep my files on Google Drive?**
+Yes. Set up a Google OAuth client once (the panel links to each Google Cloud
+step), then **Admin → Storage → Connect Google Drive**: pick the account, allow,
+done. Use the Drive as the main storage, as a backup, or both. Publish the
+consent screen in Google Cloud — left in "Testing", Google drops the connection
+every 7 days; published, it stays connected. See
+[docs/STORAGE.md](docs/STORAGE.md#connecting-google-drive).
+
+**What happens if my FTP server goes down?**
+Mark another backend (a second FTP server, S3, Google Drive…) as a *backup
+layer* and every file is copied there in the background. While the main server
+is down, downloads are served from the backup automatically. To leave the dead
+server for good, *Migrate files* moves everything off it, reading from the
+backup.
+
+**How long does a permanent share link last?**
+Until you revoke it or delete the file. Moving the file to another backend,
+renaming it or a Cloudflare cache refresh does not change the link.
+
+**Can Cloudflare serve the downloads?**
+Yes. Turn on **Admin → Storage → Cloudflare caching**, and public links with no
+password or download limit are cached by Cloudflare for up to 30 days, so repeat
+downloads never reach your server. One Cloudflare cache rule is needed; the
+panel creates it for you with an API token, or the page shows how to add it by
+hand. See [docs/STORAGE.md](docs/STORAGE.md#cloudflare-caching-for-downloads).
 
 **Can I use S3 or another object store instead of local disk?**
 Yes — either add it as a backend from the panel, or set `STORAGE_DRIVER=s3` and

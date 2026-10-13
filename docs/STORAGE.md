@@ -1,8 +1,9 @@
 # Storage backends
 
 Files do not have to live next to the code. A backend is any place bytes can go:
-the local disk, an FTP or FTPS server, an SFTP server, or an S3-compatible bucket.
-Add as many as you like from **Admin → Storage**.
+the local disk, an FTP or FTPS server, an SFTP server, an S3-compatible bucket,
+or a Google Drive. Add as many as you like from **Admin → Storage**, keep backup
+copies on some of them, and let Cloudflare serve public downloads from its cache.
 
 > Not to be confused with [docs/SFTP.md](SFTP.md). That is about letting *other
 > people* upload **into** this platform over FTP/SFTP. This page is about where
@@ -114,6 +115,103 @@ easier to change and lets you have more than one.
 
 ---
 
+## Connecting Google Drive
+
+Google only gives Drive access to a registered app, so the site needs one OAuth
+client. You set it up **once**; after that every Drive is linked with a click.
+
+1. **Admin → Storage → Connect Google Drive**. The first time, a dialog opens with
+   a link to each Google Cloud Console page:
+   - create a project, and enable the **Google Drive API**;
+   - set up the consent screen (audience *External*), then **Publish app** on the
+     *Audience* page;
+   - create an OAuth client of type **Web application**, with the redirect URI
+     the dialog shows (it has a copy button):
+     `https://your-site/admin/storage/google/callback`.
+2. Paste the client ID and secret and save. The secret is stored encrypted.
+   Alternatively set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.env`.
+3. Press **Connect Google Drive** again, choose the Google account and allow
+   access. The backend is created, named after the account, with a
+   *S3 Lite storage* folder in that Drive.
+
+To add a Drive as a backup straight away, use **Add backend**, pick
+*Google Drive* and fill in a backup layer number: the button becomes
+*Continue with Google*.
+
+**How long does it stay connected?** Indefinitely, once the consent screen is
+published. Google drops the connection if the app is still in *Testing* (after
+7 days), if you remove the app at myaccount.google.com/permissions, if the token
+goes unused for six months (the cron job uses it constantly), or after about a
+hundred reconnects of the same account. If it does drop, the backend shows as
+*failing*; **⋯ → Reconnect Google Drive** relinks the same backend and nothing
+stored is lost.
+
+Access uses the `drive.file` scope: the app only ever sees files it created
+itself, never the rest of the account. Uploads are resumable and streamed,
+downloads honour byte ranges, and copies happen on Google's side.
+
+---
+
+## Backup layers and fail-over
+
+Give a backend a **backup layer** number (Edit → *Backup layer*): `1` is the first
+backup, `2` the second, and so on. Blank turns it off.
+
+- Every new upload still goes to the default backend. A background job then
+  copies it to each layer, verifying the size.
+- When a backend first becomes a layer, every existing file is queued for it
+  too.
+- If the default backend cannot produce a file — the server is down, or the
+  object is gone — downloads, previews and version restores read from the
+  first layer holding a verified copy. Visitors do not notice.
+- Deleting a file removes its copies from every layer.
+- Each row on the Storage page shows how many copies are backed up, pending and
+  failed. A copy is retried every 15 minutes and marked failed after five
+  attempts; **⋯ → Retry failed backups** re-queues them once the layer is fixed.
+
+Copies are made by the queue, so schedule `public/cron.php` (see the README).
+
+---
+
+## Cloudflare caching for downloads
+
+With the site behind Cloudflare, popular downloads can be served from
+Cloudflare's cache instead of this server. Turn it on under
+**Admin → Storage → Cloudflare caching**.
+
+**What is cached.** Share links with no password and no download limit that
+never expire, or still have at least the minimum lifetime left (7 days by
+default). They download through `/cdn/<token>/<filename>` with
+`Cache-Control: public` for the configured number of days (30 by default) — never
+past the link's own expiry. The public share page links there automatically,
+and the share API returns it as `cdn_url`. The link itself never expires; only
+Cloudflare's copy is refreshed.
+
+**What is not.** Password-protected or download-limited links, links about to
+expire, signed temporary URLs and downloads made while signed in. A link that
+gains a password or limit stops being cacheable at once; Cloudflare's existing
+copy is purged straight away with an API token, or ages out without one.
+
+**The cache rule.** Cloudflare only caches some file types on its own, so one
+cache rule is needed to cover every format:
+
+- *Automatically:* add a Cloudflare API token and the zone ID, then press
+  **Create cache rule in Cloudflare**. Your other cache rules are left alone.
+- *By hand:* Caching → Cache Rules → Create rule. URI Path *starts with*
+  `/cdn/` → **Eligible for cache** → Edge TTL *Use cache-control header if
+  present, bypass cache if not*.
+
+**The API token** (optional, but recommended) needs **Zone → Cache Rules: Edit**
+and **Zone → Cache Purge: Purge** on the zone. With it, Cloudflare's copy is
+purged the moment a link is revoked or changed, or its file is replaced,
+renamed, moved or deleted. Without it, copies simply age out.
+
+Worth knowing: downloads Cloudflare answers from its cache never reach the
+server, so they are not counted in the download statistics; and Cloudflare does
+not cache files above 512 MB on Free, Pro and Business plans.
+
+---
+
 ## Moving files between backends
 
 **Admin → Storage → ⋯ → Migrate files** queues a background job. Run the queue
@@ -127,6 +225,11 @@ Each object is streamed to the destination, verified by size, and only then
 removed from the source. The job works in batches and re-queues itself until the
 source is empty, so it is safe to stop and restart — whatever is left behind is
 simply picked up next time.
+
+It also works when the source has died: objects are read from a backup layer
+instead, and if the destination is itself a layer that already holds the copy,
+the file is simply re-pointed with nothing to transfer. That is how you move
+everything onto Google Drive after an FTP server fails.
 
 Over the API:
 
@@ -184,7 +287,10 @@ All of these need an `admin` scope key.
 | `POST` | `/api/v1/storage-backends/{id}/migrate` | Move files to another backend |
 
 Credentials are write-only. Responses only tell you *whether* a password, key or
-secret is set, never what it is.
+secret is set, never what it is. Send `replica_priority` (1, 2, …, or `null`) to
+make a backend a backup layer; a `PATCH` that leaves it out keeps the current
+value. Google Drive backends are created by signing in from the panel, not over
+the API.
 
 ---
 
@@ -198,7 +304,8 @@ secret is set, never what it is.
   has put on each one.
 - **Orphan pruning and the local integrity scan** only walk local backends;
   listing a remote server recursively is neither portable nor cheap. Missing-file
-  detection still runs against every backend.
+  detection still runs against every backend. Backup copies on a local disk are
+  recognised and never pruned.
 - **Range requests** (video seeking, resumable downloads) are passed through to
   the backend, so a seek does not drag the whole file across the network first.
 - **Latency is real.** Every upload to a remote backend is a second network hop.
