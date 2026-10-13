@@ -172,8 +172,11 @@ final class CdnCacheService
             'action'            => 'set_cache_settings',
             'action_parameters' => [
                 'cache'       => true,
-                // The origin decides per link (and caps at its expiry).
-                'edge_ttl'    => ['mode' => 'respect_origin'],
+                // The origin decides per link (and caps at its expiry); a
+                // response without a Cache-Control header - an error page,
+                // say - is not cached at all rather than held for
+                // Cloudflare's default TTL.
+                'edge_ttl'    => ['mode' => 'bypass_by_default'],
                 'browser_ttl' => ['mode' => 'respect_origin'],
             ],
             'enabled'           => true,
