@@ -17,6 +17,7 @@ $driverIcons = [
     'ftps'  => 'lock',
     'sftp'  => 'terminal',
     's3'    => 'cloud',
+    'gdrive' => 'cloud',
 ];
 
 View::startSection('content');
@@ -154,6 +155,8 @@ View::startSection('content');
                         <td>
                             <?php if (!$backend['is_active']): ?>
                                 <span class="badge">disabled</span>
+                            <?php elseif ($backend['driver'] === 'gdrive' && !$backend['is_connected']): ?>
+                                <span class="badge badge-danger">not connected</span>
                             <?php elseif ($backend['status'] === 'ok'): ?>
                                 <span class="badge badge-success"><span class="dot dot-success"></span> connected</span>
                             <?php elseif ($backend['status'] === 'error'): ?>
@@ -192,8 +195,16 @@ View::startSection('content');
                                             data-fill-region="<?= e((string) ($backend['options']['region'] ?? '')) ?>"
                                             data-fill-bucket="<?= e((string) ($backend['options']['bucket'] ?? '')) ?>"
                                             data-fill-access_key="<?= e((string) ($backend['options']['access_key'] ?? '')) ?>"
+                                            data-fill-client_id="<?= e((string) ($backend['options']['client_id'] ?? '')) ?>"
+                                            data-fill-folder_id="<?= e((string) ($backend['options']['folder_id'] ?? '')) ?>"
                                             data-fill-host_fingerprint="<?= e((string) ($backend['options']['host_fingerprint'] ?? '')) ?>"
                                             data-fill-timeout="<?= e((string) ($backend['options']['timeout'] ?? 30)) ?>"><?= icon('edit') ?> Edit</button>
+
+                                    <?php if ($backend['driver'] === 'gdrive'): ?>
+                                        <a class="dropdown__item" href="<?= e(url('/admin/storage/' . $backend['id'] . '/google/connect')) ?>">
+                                            <?= icon('link') ?> <?= $backend['is_connected'] ? 'Reconnect' : 'Connect' ?> Google Drive
+                                        </a>
+                                    <?php endif; ?>
 
                                     <?php if (!$backend['is_default'] && $backend['is_active']): ?>
                                         <form method="post" action="<?= e(url('/admin/storage/' . $backend['id'] . '/default')) ?>">
@@ -349,6 +360,29 @@ View::startSection('content');
                     </div>
                 </div>
 
+                <div data-storage-fields="gdrive">
+                    <div class="form-row">
+                        <div class="field">
+                            <label class="label">OAuth client ID <span class="req">*</span></label>
+                            <input class="input mono" name="client_id" autocomplete="off" placeholder="1234-abc.apps.googleusercontent.com">
+                        </div>
+                        <div class="field">
+                            <label class="label">OAuth client secret</label>
+                            <input class="input" name="client_secret" type="password" autocomplete="new-password">
+                        </div>
+                    </div>
+                    <div class="field">
+                        <label class="label">Folder ID (optional)</label>
+                        <input class="input mono" name="folder_id" placeholder="blank = create an &quot;S3 Lite storage&quot; folder">
+                    </div>
+                    <p class="faint small">
+                        In Google Cloud Console create an OAuth client of type <strong>Web application</strong>, enable the
+                        Google Drive API, and add this as an authorised redirect URI:
+                        <span class="mono"><?= e(\App\Controllers\Web\AdminController::googleRedirectUri()) ?></span>.
+                        After saving you will be sent to Google to allow access.
+                    </p>
+                </div>
+
                 <div class="form-row" data-storage-fields="ftp ftps sftp s3">
                     <div class="field">
                         <label class="label">Base directory</label>
@@ -491,6 +525,29 @@ View::startSection('content');
                     </div>
                 </div>
 
+                <div data-storage-fields="gdrive">
+                    <div class="form-row">
+                        <div class="field">
+                            <label class="label">OAuth client ID <span class="req">*</span></label>
+                            <input class="input mono" name="client_id" autocomplete="off" placeholder="1234-abc.apps.googleusercontent.com">
+                        </div>
+                        <div class="field">
+                            <label class="label">OAuth client secret</label>
+                            <input class="input" name="client_secret" type="password" autocomplete="new-password">
+                        </div>
+                    </div>
+                    <div class="field">
+                        <label class="label">Folder ID (optional)</label>
+                        <input class="input mono" name="folder_id" placeholder="blank = create an &quot;S3 Lite storage&quot; folder">
+                    </div>
+                    <p class="faint small">
+                        In Google Cloud Console create an OAuth client of type <strong>Web application</strong>, enable the
+                        Google Drive API, and add this as an authorised redirect URI:
+                        <span class="mono"><?= e(\App\Controllers\Web\AdminController::googleRedirectUri()) ?></span>.
+                        After saving you will be sent to Google to allow access.
+                    </p>
+                </div>
+
                 <div class="form-row" data-storage-fields="ftp ftps sftp s3">
                     <div class="field">
                         <label class="label">Base directory</label>
@@ -528,7 +585,7 @@ View::startSection('content');
                     </p>
                 </div>
 
-                <p class="faint small mt-2" data-storage-fields="ftp ftps sftp s3">
+                <p class="faint small mt-2" data-storage-fields="ftp ftps sftp s3 gdrive">
                     Leave the credential fields blank to keep what is already stored.
                 </p>
             </div>

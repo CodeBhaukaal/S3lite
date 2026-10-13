@@ -914,6 +914,209 @@ final class UnitTest extends TestCase
         }
     }
 
+    /** Start tests/fake-gdrive.php on a free port; returns its base URL or null. */
+    private function startFakeGdrive(string $root): ?string
+    {
+        $port = random_int(25401, 26000);
+        $null = PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
+        $env = array_merge(getenv(), ['FAKE_GDRIVE_ROOT' => $root]);
+
+        $process = @proc_open(
+            [PHP_BINARY, '-S', '127.0.0.1:' . $port, str_replace('\\', '/', dirname(__DIR__) . '/tests/fake-gdrive.php')],
+            [['pipe', 'r'], ['file', $null, 'w'], ['file', $null, 'w']],
+            $pipes,
+            null,
+            $env,
+            ['bypass_shell' => true]
+        );
+
+        if (!is_resource($process)) {
+            return null;
+        }
+
+        self::$processes[] = $process;
+
+        for ($i = 0; $i < 40; $i++) {
+            usleep(100000);
+            $socket = @fsockopen('127.0.0.1', $port, $errno, $errstr, 0.2);
+            if ($socket !== false) {
+                fclose($socket);
+
+                return 'http://127.0.0.1:' . $port;
+            }
+        }
+
+        return null;
+    }
+
+    /** @return array<string, string> Driver options pointing at the fake server. */
+    private static function fakeGdriveOptions(string $base): array
+    {
+        return [
+            'api_base'    => $base . '/drive/v3',
+            'upload_base' => $base . '/upload/drive/v3',
+            'token_url'   => $base . '/token',
+            'timeout'     => 5,
+        ];
+    }
+
+    public function testGoogleDriveDriverRoundTrip(): void
+    {
+        $root = rtrim(str_replace('\\', '/', sys_get_temp_dir()), '/') . '/fake-gdrive-' . Str::random(6);
+        $base = $this->startFakeGdrive($root);
+
+        if ($base === null) {
+            $this->skip('Could not start the fake Google Drive server');
+        }
+
+        $driver = new \App\Storage\GoogleDriveDriver('suite-gdrive', 'client', 'secret', 'good-refresh', '', self::fakeGdriveOptions($base));
+
+        $this->assertSame('gdrive', $driver->driver());
+
+        // No folder given: one is created, and found again rather than duplicated.
+        $folder = $driver->folderId();
+        $this->assertNotEmpty($folder);
+        $again = new \App\Storage\GoogleDriveDriver('suite-gdrive', 'client', 'secret', 'good-refresh', '', self::fakeGdriveOptions($base));
+        $this->assertSame($folder, $again->folderId(), 'A second instance must reuse the folder');
+
+        $path = '7/ab/cd/it\'s a "file".bin';
+        $body = 'HEADER' . str_repeat('drive', 500);
+
+        $this->assertFalse($driver->exists($path));
+        $this->assertTrue($driver->putContents($path, $body));
+        $this->assertTrue($driver->exists($path));
+        $this->assertSame(strlen($body), $driver->size($path));
+        $this->assertSame($body, $again->get($path), 'A fresh instance finds it by name');
+
+        $stream = $driver->readStream($path, 6);
+        $this->assertNotNull($stream);
+        $this->assertSame(substr($body, 6), stream_get_contents($stream));
+        fclose($stream);
+
+        // Overwriting keeps one object under that name.
+        $this->assertTrue($driver->putContents($path, 'v2'));
+        $this->assertSame('v2', $again->get($path));
+        $state = json_decode((string) file_get_contents($root . '/state.json'), true);
+        $named = array_filter($state['files'], static fn (array $f): bool => $f['name'] === $path);
+        $this->assertCount(1, $named, 'An overwrite must not create a duplicate');
+
+        $this->assertTrue($driver->copy($path, '7/copy.bin'));
+        $this->assertSame('v2', $driver->get('7/copy.bin'));
+        $this->assertTrue($driver->move('7/copy.bin', '7/moved.bin'));
+        $this->assertFalse($driver->exists('7/copy.bin'));
+        $this->assertSame('v2', $driver->get('7/moved.bin'));
+
+        $this->assertTrue($driver->delete('7/moved.bin'));
+        $this->assertTrue($driver->delete('7/moved.bin'), 'Deleting twice is fine');
+        $this->assertNull($driver->readStream('7/moved.bin'));
+
+        $this->assertSame(1000000, $driver->diskUsage()['total']);
+
+        $this->assertThrows(\RuntimeException::class, static fn () => $driver->exists('../escape'));
+    }
+
+    public function testGoogleDriveOauthAndBadToken(): void
+    {
+        $root = rtrim(str_replace('\\', '/', sys_get_temp_dir()), '/') . '/fake-gdrive-' . Str::random(6);
+        $base = $this->startFakeGdrive($root);
+
+        if ($base === null) {
+            $this->skip('Could not start the fake Google Drive server');
+        }
+
+        $tokens = \App\Storage\GoogleDriveDriver::exchangeCode('client', 'secret', 'good-code', 'http://localhost/cb', $base . '/token');
+        $this->assertSame('good-refresh', $tokens['refresh_token']);
+
+        $error = $this->assertThrows(
+            \RuntimeException::class,
+            static fn () => \App\Storage\GoogleDriveDriver::exchangeCode('client', 'secret', 'bad-code', 'http://localhost/cb', $base . '/token')
+        );
+        $this->assertContains('Google refused', $error->getMessage());
+
+        $url = \App\Storage\GoogleDriveDriver::authorizationUrl('client', 'http://localhost/cb', 'st4te');
+        $this->assertContains('access_type=offline', $url);
+        $this->assertContains('state=st4te', $url);
+        $this->assertContains(rawurlencode(\App\Storage\GoogleDriveDriver::SCOPE), $url);
+
+        $revoked = new \App\Storage\GoogleDriveDriver('suite-gdrive', 'client', 'secret', 'revoked', 'f', self::fakeGdriveOptions($base));
+        $error = $this->assertThrows(\RuntimeException::class, static fn () => $revoked->exists('a.bin'));
+        $this->assertContains('connect Google Drive again', $error->getMessage());
+
+        $this->assertThrows(
+            \RuntimeException::class,
+            static fn () => new \App\Storage\GoogleDriveDriver('suite-gdrive', 'client', 'secret', '', '', [])
+        );
+    }
+
+    /** The case the feature exists for: FTP dies, Drive serves, then takes over. */
+    public function testGoogleDriveAsBackupLayer(): void
+    {
+        $root = rtrim(str_replace('\\', '/', sys_get_temp_dir()), '/') . '/fake-gdrive-' . Str::random(6);
+        $base = $this->startFakeGdrive($root);
+
+        if ($base === null) {
+            $this->skip('Could not start the fake Google Drive server');
+        }
+
+        $userId = (int) \App\Core\Database::scalar('SELECT id FROM users ORDER BY id LIMIT 1');
+        $primarySlug = 'suite-primary-' . strtolower(Str::random(6));
+        $driveSlug = 'suite-drive-' . strtolower(Str::random(6));
+        $temp = rtrim(str_replace('\\', '/', sys_get_temp_dir()), '/') . '/drive-primary-' . Str::random(6);
+
+        $ids = [
+            \App\Models\StorageBackend::create([
+                'uuid' => Str::uuid(), 'name' => $primarySlug, 'slug' => $primarySlug, 'driver' => 'local',
+                'root_path' => $temp, 'options' => [], 'is_active' => 1, 'status' => 'ok',
+            ]),
+            \App\Models\StorageBackend::create([
+                'uuid' => Str::uuid(), 'name' => $driveSlug, 'slug' => $driveSlug, 'driver' => 'gdrive',
+                'root_path' => '', 'options' => self::fakeGdriveOptions($base) + ['client_id' => 'client'],
+                'secret' => \App\Models\StorageBackend::mergeCredentials([], ['client_secret' => 'secret', 'refresh_token' => 'good-refresh']),
+                'is_active' => 1, 'replica_priority' => 1, 'status' => 'ok',
+            ]),
+        ];
+        StorageManager::reset();
+
+        $path = $userId . '/ef/01/drive-' . Str::random(8) . '.txt';
+        $body = 'safe in drive ' . Str::random(16);
+        $fileId = 0;
+
+        try {
+            $this->assertTrue(\App\Services\StorageBackendService::test($ids[1])['ok'], 'Connection test should pass');
+
+            StorageManager::disk($primarySlug)->putContents($path, $body);
+            $fileId = \App\Models\FileRecord::create([
+                'uuid' => Str::uuid(), 'user_id' => $userId, 'name' => 'd.txt', 'original_name' => 'd.txt',
+                'size' => strlen($body), 'checksum' => hash('sha256', $body), 'disk' => $primarySlug, 'storage_path' => $path,
+            ]);
+
+            \App\Services\ReplicationService::queue($primarySlug, $path);
+            $run = \App\Services\ReplicationService::run();
+            $this->assertSame(1, $run['synced'], 'The copy to Drive should succeed');
+
+            StorageManager::disk($primarySlug)->delete($path);
+            $disk = \App\Services\ReplicationService::readableDisk($primarySlug, $path);
+            $this->assertSame($driveSlug, $disk->name(), 'Drive should serve once the primary lost it');
+            $this->assertSame($body, $disk->get($path));
+
+            $result = \App\Services\StorageBackendService::migrate($primarySlug, $driveSlug, 10);
+            $this->assertSame(1, $result['moved'], implode('; ', $result['errors']));
+            $this->assertSame($driveSlug, \App\Core\Database::scalar('SELECT disk FROM files WHERE id = ?', [$fileId]));
+
+            \App\Services\ReplicationService::deleteEverywhere($driveSlug, $path);
+            $this->assertFalse(StorageManager::disk($driveSlug)->exists($path));
+        } finally {
+            if ($fileId > 0) {
+                \App\Models\FileRecord::deleteById($fileId);
+            }
+            \App\Core\Database::statement('DELETE FROM file_replicas WHERE storage_path = ?', [$path]);
+            foreach ($ids as $id) {
+                \App\Models\StorageBackend::deleteById($id);
+            }
+            StorageManager::reset();
+        }
+    }
+
     public function testUnknownBackendSlugFailsLoudly(): void
     {
         $this->assertThrows(

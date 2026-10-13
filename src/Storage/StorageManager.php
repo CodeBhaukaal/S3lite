@@ -126,6 +126,14 @@ final class StorageManager
                 (string) ($credentials['secret_key'] ?? ''),
                 $slug
             ),
+            'gdrive' => new GoogleDriveDriver(
+                $slug,
+                (string) ($options['client_id'] ?? ''),
+                (string) ($credentials['client_secret'] ?? ''),
+                (string) ($credentials['refresh_token'] ?? ''),
+                (string) ($options['folder_id'] ?? ''),
+                $options
+            ),
             default => throw new RuntimeException("Unknown storage driver: {$backend['driver']}"),
         };
     }

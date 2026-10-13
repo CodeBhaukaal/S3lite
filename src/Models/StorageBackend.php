@@ -23,10 +23,11 @@ final class StorageBackend extends Model
         'ftps'  => 'FTP over TLS (FTPS)',
         'sftp'  => 'SFTP (SSH)',
         's3'    => 'S3-compatible',
+        'gdrive' => 'Google Drive',
     ];
 
     /** Credential fields kept inside the encrypted `secret` blob. */
-    public const SECRET_FIELDS = ['password', 'private_key', 'passphrase', 'secret_key'];
+    public const SECRET_FIELDS = ['password', 'private_key', 'passphrase', 'secret_key', 'client_secret', 'refresh_token'];
 
     public static function findBySlug(string $slug): ?array
     {
@@ -180,6 +181,9 @@ final class StorageBackend extends Model
             'has_password'    => ($credentials['password'] ?? '') !== '',
             'has_private_key' => ($credentials['private_key'] ?? '') !== '',
             'has_secret_key'  => ($credentials['secret_key'] ?? '') !== '',
+            'has_client_secret' => ($credentials['client_secret'] ?? '') !== '',
+            // For Google Drive: whether the OAuth handshake has been done.
+            'is_connected'    => ($credentials['refresh_token'] ?? '') !== '',
             'created_at'      => $backend['created_at'],
         ];
     }
@@ -189,6 +193,10 @@ final class StorageBackend extends Model
     {
         if ($backend['driver'] === 'local') {
             return 'this server';
+        }
+
+        if ($backend['driver'] === 'gdrive') {
+            return 'Google Drive';
         }
 
         if ($backend['driver'] === 's3') {

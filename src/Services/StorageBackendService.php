@@ -284,10 +284,15 @@ final class StorageBackendService
             $path = (string) $row['storage_path'];
 
             try {
-                $source = ReplicationService::readableDisk($fromSlug, $path, $toSlug);
+                // When the target is a backup layer that already holds the
+                // object, nothing needs reading — which matters most exactly
+                // when the source is the backend that died.
+                if (!$target->exists($path)) {
+                    $source = ReplicationService::readableDisk($fromSlug, $path, $toSlug);
 
-                if (!self::transfer($source, $target, $path)) {
-                    throw new \RuntimeException('copy failed');
+                    if (!self::transfer($source, $target, $path)) {
+                        throw new \RuntimeException('copy failed');
+                    }
                 }
 
                 Database::statement(
@@ -484,6 +489,11 @@ final class StorageBackendService
         $secrets = [];
 
         foreach (StorageBackend::SECRET_FIELDS as $field) {
+            // Only the OAuth callback gets to set a Drive refresh token.
+            if ($field === 'refresh_token') {
+                continue;
+            }
+
             if (array_key_exists($field, $input)) {
                 $secrets[$field] = $input[$field] === null ? null : (string) $input[$field];
             }
@@ -533,6 +543,10 @@ final class StorageBackendService
             throw new HttpException(422, 'S3 backends need an endpoint and a bucket.', 'invalid_s3_config');
         }
 
+        if ($driver === 'gdrive' && ($options['client_id'] ?? '') === '') {
+            throw new HttpException(422, 'Google Drive needs the OAuth client ID from your Google Cloud project.', 'invalid_gdrive_config');
+        }
+
         return [
             'name'      => mb_substr($name, 0, 100),
             'driver'    => $driver,
@@ -575,6 +589,12 @@ final class StorageBackendService
             $options['region'] = trim((string) ($input['region'] ?? '')) ?: 'us-east-1';
             $options['bucket'] = trim((string) ($input['bucket'] ?? ''));
             $options['access_key'] = trim((string) ($input['access_key'] ?? ''));
+        }
+
+        if ($driver === 'gdrive') {
+            $options['client_id'] = trim((string) ($input['client_id'] ?? ''));
+            // Blank = an "S3 Lite storage" folder is created on first use.
+            $options['folder_id'] = trim((string) ($input['folder_id'] ?? ''));
         }
 
         return $options;

@@ -167,6 +167,8 @@ $router->group(['prefix' => '/admin', 'middleware' => ['installed', 'auth', 'adm
     $router->post('/storage/{id}/test', AdminController::class . '@testBackend')->middleware('csrf', 'throttle:20,60');
     $router->post('/storage/{id}/default', AdminController::class . '@defaultBackend')->middleware('csrf');
     $router->post('/storage/{id}/migrate', AdminController::class . '@migrateBackend')->middleware('csrf');
+    $router->get('/storage/google/callback', AdminController::class . '@googleCallback');
+    $router->get('/storage/{id}/google/connect', AdminController::class . '@googleConnect');
     $router->post('/storage/{id}/replicas/retry', AdminController::class . '@retryReplicas')->middleware('csrf');
     $router->post('/storage/{id}/delete', AdminController::class . '@deleteBackend')->middleware('csrf');
 
